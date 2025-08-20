@@ -4,9 +4,22 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 from streamlit_drawable_canvas import st_canvas
+import base64
+import io
 
 # ====================================================================
-# 1. Helper Functions (Unchanged)
+# 1. New Helper Function to handle image conversion
+# ====================================================================
+
+def image_to_base64(image):
+    """Converts a PIL Image to a web-friendly Base64 data URL."""
+    buffered = io.BytesIO()
+    image.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode()
+    return f"data:image/png;base64,{img_str}"
+
+# ====================================================================
+# 2. Helper Functions for Color and Shape (Unchanged)
 # ====================================================================
 
 def get_color_name(hsv_color):
@@ -38,7 +51,7 @@ def get_shape_name(contour):
         return "Irregular"
 
 # ====================================================================
-# 2. Main Image Processing Function (Unchanged)
+# 3. Main Image Processing Function (Unchanged)
 # ====================================================================
 
 def analyze_pills(image, roi, bg_threshold, min_area):
@@ -86,7 +99,7 @@ def analyze_pills(image, roi, bg_threshold, min_area):
     return output_image, pill_data
 
 # ====================================================================
-# 3. Streamlit User Interface (with Mouse ROI)
+# 4. Streamlit User Interface (with fix)
 # ====================================================================
 
 st.set_page_config(layout="wide")
@@ -103,18 +116,22 @@ with st.sidebar:
 col1, col2 = st.columns(2)
 
 if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    # Fix 1: Corrected the color conversion code
-    image_bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    image_pil = Image.open(uploaded_file)
+    image_bgr = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
     img_h, img_w, _ = image_bgr.shape
 
     with col1:
         st.subheader("Draw Region of Interest (ROI)")
+        
+        # --- THIS IS THE FIXED CANVAS CALL ---
+        # We now convert the image to a Base64 URL before passing it.
+        bg_image_b64 = image_to_base64(image_pil)
+        
         canvas_result = st_canvas(
-            fill_color="rgba(255, 165, 0, 0.3)",  # Orange with transparency
+            fill_color="rgba(255, 165, 0, 0.3)",
             stroke_width=2,
             stroke_color="#FF0000",
-            background_image=Image.open(uploaded_file),
+            background_image=bg_image_b64, # Pass the URL string
             update_streamlit=True,
             height=img_h,
             width=img_w,
@@ -122,9 +139,7 @@ if uploaded_file is not None:
             key="canvas",
         )
 
-    # Check if a rectangle has been drawn
     if canvas_result.json_data is not None and len(canvas_result.json_data["objects"]) > 0:
-        # Get the latest rectangle drawn
         rect = canvas_result.json_data["objects"][-1]
         x, y, w, h = int(rect["left"]), int(rect["top"]), int(rect["width"]), int(rect["height"])
         roi = (x, y, w, h)
@@ -132,7 +147,6 @@ if uploaded_file is not None:
         st.sidebar.info(f"ROI Selected: x={x}, y={y}, w={w}, h={h}")
 
         if st.sidebar.button("4. Analyze Pills"):
-            # Fix 2: Corrected the variable name
             processed_image, pill_results = analyze_pills(image_bgr, roi, bg_std_threshold, min_pill_area)
             
             with col2:
