@@ -88,7 +88,6 @@ def analyze_pills(image, roi, bg_threshold, min_area):
                 cX = int(M["m10"] / M["m00"]); cY = int(M["m01"] / M["m00"])
                 cv2.putText(output_image, str(i + 1), (cX - 15, cY + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
     
-    # --- THIS IS THE CORRECTED LINE ---
     return output_image, pill_data
 
 # ====================================================================
@@ -108,7 +107,8 @@ with st.sidebar:
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
-    image_bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB_BGR)
+    # --- THIS IS THE CORRECTED LINE ---
+    image_bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     img_h, img_w, _ = image_bgr.shape
 
     with st.sidebar:
@@ -128,7 +128,7 @@ if uploaded_file is not None:
         st.image(display_img_with_roi, channels="BGR", caption="Adjust ROI and parameters in the sidebar.")
 
     if st.sidebar.button("Analyze Pills"):
-        processed_image, pill_results = analyze_pills(image_bgr, roi, bg_std_threshold, min_pill_area)
+        processed_image, pill_results = analyze_pills(image_bgr, roi, bg_std_threshold, min_pill_.area)
         
         with col2:
             st.subheader("Processed Image")
