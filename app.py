@@ -3,23 +3,11 @@ import cv2
 import numpy as np
 import pandas as pd
 from PIL import Image
-from streamlit_drawable_canvas import st_canvas
 import base64
 import io
 
 # ====================================================================
-# 1. New Helper Function to handle image conversion
-# ====================================================================
-
-def image_to_base64(image):
-    """Converts a PIL Image to a web-friendly Base64 data URL."""
-    buffered = io.BytesIO()
-    image.save(buffered, format="PNG")
-    img_str = base64.b64encode(buffered.getvalue()).decode()
-    return f"data:image/png;base64,{img_str}"
-
-# ====================================================================
-# 2. Helper Functions for Color and Shape (Unchanged)
+# 1. Helper Functions for Color and Shape
 # ====================================================================
 
 def get_color_name(hsv_color):
@@ -51,7 +39,7 @@ def get_shape_name(contour):
         return "Irregular"
 
 # ====================================================================
-# 3. Main Image Processing Function (Unchanged)
+# 2. Main Image Processing Function
 # ====================================================================
 
 def analyze_pills(image, roi, bg_threshold, min_area):
@@ -99,12 +87,12 @@ def analyze_pills(image, roi, bg_threshold, min_area):
     return output_image, pill_data
 
 # ====================================================================
-# 4. Streamlit User Interface (FIXED)
+# 3. Streamlit User Interface (Simplified without external canvas)
 # ====================================================================
 
 st.set_page_config(layout="wide")
 st.title("💊 Pill Detector Pro")
-st.write("Upload an image, draw a box around the pills, and click 'Analyze Pills'.")
+st.write("Upload an image and specify the region to analyze pills.")
 
 with st.sidebar:
     st.header("Controls")
@@ -112,53 +100,54 @@ with st.sidebar:
     st.subheader("Detection Parameters")
     min_pill_area = st.slider("2. Minimum Pill Area (pixels)", 50, 2000, 200, help="Filters out small noise.")
     bg_std_threshold = st.slider("3. Background Uniformity", 5.0, 50.0, 15.0, help="Lower for solid color backgrounds.")
+    
+    st.subheader("ROI Selection")
+    if uploaded_file:
+        image_pil = Image.open(uploaded_file)
+        img_w, img_h = image_pil.size
+        
+        x = st.slider("X coordinate", 0, img_w, 0)
+        y = st.slider("Y coordinate", 0, img_h, 0)
+        w = st.slider("Width", 10, img_w - x, min(300, img_w - x))
+        h = st.slider("Height", 10, img_h - y, min(300, img_h - y))
+        
+        roi = (x, y, w, h)
+        
+        if st.button("4. Analyze Pills"):
+            image_bgr = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
+            processed_image, pill_results = analyze_pills(image_bgr, roi, bg_std_threshold, min_pill_area)
+            
+            st.session_state.processed_image = processed_image
+            st.session_state.pill_results = pill_results
+    else:
+        roi = None
 
 col1, col2 = st.columns(2)
 
 if uploaded_file is not None:
     image_pil = Image.open(uploaded_file)
-    image_bgr = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
-    img_h, img_w, _ = image_bgr.shape
-
+    
     with col1:
-        st.subheader("Draw Region of Interest (ROI)")
+        st.subheader("Original Image")
+        st.image(image_pil, caption="Uploaded Image", use_column_width=True)
         
-        # --- FIXED: Pass the PIL Image directly instead of Base64 string ---
-        canvas_result = st_canvas(
-            fill_color="rgba(255, 165, 0, 0.3)",
-            stroke_width=2,
-            stroke_color="#FF0000",
-            background_image=image_pil,  # Pass the PIL Image object directly
-            update_streamlit=True,
-            height=img_h,
-            width=img_w,
-            drawing_mode="rect",
-            key="canvas",
-        )
+        if roi:
+            # Draw ROI rectangle on the image
+            draw_image = image_pil.copy()
+            draw_image = np.array(draw_image)
+            cv2.rectangle(draw_image, (roi[0], roi[1]), (roi[0] + roi[2], roi[1] + roi[3]), (255, 0, 0), 3)
+            st.image(draw_image, caption=f"ROI: x={roi[0]}, y={roi[1]}, w={roi[2]}, h={roi[3]}", use_column_width=True)
 
-    if canvas_result.json_data is not None and len(canvas_result.json_data["objects"]) > 0:
-        rect = canvas_result.json_data["objects"][-1]
-        x, y, w, h = int(rect["left"]), int(rect["top"]), int(rect["width"]), int(rect["height"])
-        roi = (x, y, w, h)
-        
-        st.sidebar.info(f"ROI Selected: x={x}, y={y}, w={w}, h={h}")
-
-        if st.sidebar.button("4. Analyze Pills"):
-            processed_image, pill_results = analyze_pills(image_bgr, roi, bg_std_threshold, min_pill_area)
+    with col2:
+        if 'processed_image' in st.session_state and 'pill_results' in st.session_state:
+            st.subheader("Processed Image")
+            st.image(st.session_state.processed_image, channels="BGR", 
+                    caption=f"Detected {len(st.session_state.pill_results)} pills.")
             
-            with col2:
-                st.subheader("Processed Image")
-                if pill_results:
-                    st.image(processed_image, channels="BGR", caption=f"Detected {len(pill_results)} pills.")
-                else:
-                    st.warning("No pills detected in the selected ROI. Try adjusting parameters.")
-
             st.subheader("📊 Detection Results")
-            if pill_results:
-                st.dataframe(pd.DataFrame(pill_results))
+            if st.session_state.pill_results:
+                st.dataframe(pd.DataFrame(st.session_state.pill_results))
             else:
-                st.info("No data to display.")
-    else:
-        st.info("Please draw a rectangle on the image to select the Region of Interest.")
+                st.info("No pills detected in the selected ROI. Try adjusting parameters.")
 else:
     st.info("Awaiting image upload...")
