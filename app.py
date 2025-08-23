@@ -99,7 +99,7 @@ def analyze_pills(image, roi, bg_threshold, min_area):
     return output_image, pill_data
 
 # ====================================================================
-# 4. Streamlit User Interface (with fix)
+# 4. Streamlit User Interface (FIXED)
 # ====================================================================
 
 st.set_page_config(layout="wide")
@@ -123,15 +123,12 @@ if uploaded_file is not None:
     with col1:
         st.subheader("Draw Region of Interest (ROI)")
         
-        # --- THIS IS THE FIXED CANVAS CALL ---
-        # We now convert the image to a Base64 URL before passing it.
-        bg_image_b64 = image_to_base64(image_pil)
-        
+        # --- FIXED: Pass the PIL Image directly instead of Base64 string ---
         canvas_result = st_canvas(
             fill_color="rgba(255, 165, 0, 0.3)",
             stroke_width=2,
             stroke_color="#FF0000",
-            background_image=bg_image_b64, # Pass the URL string
+            background_image=image_pil,  # Pass the PIL Image object directly
             update_streamlit=True,
             height=img_h,
             width=img_w,
