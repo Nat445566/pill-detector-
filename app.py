@@ -3,7 +3,6 @@ import cv2
 import numpy as np
 import pandas as pd
 from PIL import Image
-import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
 
 # ====================================================================
@@ -261,15 +260,21 @@ if uploaded_file:
                 st.subheader("📋 Detailed Results")
                 st.dataframe(df.drop('Color RGB', axis=1), use_container_width=True)
                 
-                # Color distribution
+                # Color distribution using Streamlit native charts
                 st.subheader("🎨 Color Distribution")
                 color_counts = df['Color'].value_counts()
-                st.bar_chart(color_counts)
+                if not color_counts.empty:
+                    st.bar_chart(color_counts)
+                else:
+                    st.info("No color data available")
                 
                 # Shape distribution
                 st.subheader("🔷 Shape Distribution")
                 shape_counts = df['Shape'].value_counts()
-                st.bar_chart(shape_counts)
+                if not shape_counts.empty:
+                    st.bar_chart(shape_counts)
+                else:
+                    st.info("No shape data available")
                 
             else:
                 st.warning("❌ No pills detected")
@@ -281,7 +286,7 @@ if uploaded_file:
                 - Try a different image angle
                 """)
                 
-                if st.session_state.processed_img is not None:
+                if hasattr(st.session_state, 'processed_img'):
                     st.image(st.session_state.processed_img, channels="BGR",
                            caption="Processing result", use_column_width=True)
 
