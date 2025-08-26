@@ -31,7 +31,7 @@ if uploaded_file is not None:
     image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     
     # Display original image
-    st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Uploaded Image", use_column_width=True)
+    st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Uploaded Image", use_container_width=True)
     
     if st.button("Count Pills"):
         with st.spinner("Processing image..."):
@@ -43,17 +43,17 @@ if uploaded_file is not None:
             blurred = cv2.GaussianBlur(gray, (blur_size, blur_size), 0)
             st.session_state.processing_steps['Blurred'] = blurred
             
-            # Apply adaptive thresholding
+            # Apply adaptive thresholding - FIXED: Changed cv to cv2
             thresh = cv2.adaptiveThreshold(
                 blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                cv.THRESH_BINARY_INV, 11, 2
+                cv2.THRESH_BINARY_INV, 11, 2
             )
             st.session_state.processing_steps['Thresholded'] = thresh
             
             # Perform morphological operations
             kernel = np.ones((3, 3), np.uint8)
-            cleaned = cv2.morphologyEx(thresh, cv.MORPH_OPEN, kernel, iterations=2)
-            cleaned = cv2.morphologyEx(cleaned, cv.MORPH_CLOSE, kernel, iterations=3)
+            cleaned = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
+            cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel, iterations=3)
             st.session_state.processing_steps['Morphological Operations'] = cleaned
             
             # Find contours
@@ -95,7 +95,7 @@ if uploaded_file is not None:
             
             with col1:
                 st.image(cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB), 
-                        caption=f"Detected {pill_count} pills", use_column_width=True)
+                        caption=f"Detected {pill_count} pills", use_container_width=True)
             
             with col2:
                 st.metric("Total Pills Counted", pill_count)
@@ -110,7 +110,7 @@ if uploaded_file is not None:
             
             for idx, (step_name, step_image) in enumerate(st.session_state.processing_steps.items()):
                 with cols[idx]:
-                    st.image(step_image, caption=step_name, use_column_width=True)
+                    st.image(step_image, caption=step_name, use_container_width=True)
 
 # Display final count
 st.success(f"Total pills counted: {st.session_state.pill_count}")
