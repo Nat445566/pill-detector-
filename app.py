@@ -10,7 +10,7 @@ if 'pill_count' not in st.session_state:
 if 'processing_steps' not in st.session_state:
     st.session_state.processing_steps = {}
 
-st.title("💊 Advanced Pill Counter - BMDS2133")
+st.title("💊 Advanced Pill Counter")
 st.write("Upload an image of pills to count them automatically")
 
 # Sidebar for advanced parameters
