@@ -4,33 +4,32 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 import io
+import base64
 from sklearn.cluster import KMeans
 
 # ====================================================================
-# 1. Enhanced Helper Functions with Morphological Operations
+# 1. Enhanced Helper Functions with Debugging
 # ====================================================================
 
-def apply_morphological_operations(mask):
-    """Apply advanced morphological operations to clean the mask"""
-    # Create different kernels for various operations
+def apply_morphological_operations(mask, operation_level=3):
+    """Apply morphological operations with adjustable intensity"""
+    # Create kernels
     kernel_small = np.ones((3, 3), np.uint8)
     kernel_medium = np.ones((5, 5), np.uint8)
     kernel_large = np.ones((7, 7), np.uint8)
     
-    # Step 1: Remove small noise (opening)
-    cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_small, iterations=2)
+    cleaned = mask.copy()
     
-    # Step 2: Fill holes and connect regions (closing)
-    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel_medium, iterations=3)
-    
-    # Step 3: Dilate to ensure pill boundaries are connected
-    cleaned = cv2.dilate(cleaned, kernel_small, iterations=1)
-    
-    # Step 4: Apply median blur to smooth edges
-    cleaned = cv2.medianBlur(cleaned, 5)
-    
-    # Step 5: Final closing to ensure solid regions
-    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel_large, iterations=2)
+    # Adjust operations based on level
+    if operation_level >= 1:
+        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel_small, iterations=2)
+    if operation_level >= 2:
+        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel_medium, iterations=3)
+    if operation_level >= 3:
+        cleaned = cv2.dilate(cleaned, kernel_small, iterations=1)
+        cleaned = cv2.medianBlur(cleaned, 5)
+    if operation_level >= 4:
+        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel_large, iterations=2)
     
     return cleaned
 
@@ -47,97 +46,111 @@ def get_dominant_color(image, mask=None, k=3):
     if len(pixels) < k:
         k = max(1, len(pixels))
     
-    kmeans = KMeans(n_clusters=k, n_init=10, random_state=42)
-    kmeans.fit(pixels)
-    dominant_color = kmeans.cluster_centers_[0]
-    return dominant_color.astype(int)
+    try:
+        kmeans = KMeans(n_clusters=k, n_init=10, random_state=42)
+        kmeans.fit(pixels)
+        dominant_color = kmeans.cluster_centers_[0]
+        return dominant_color.astype(int)
+    except:
+        return [0, 0, 0]
 
 def get_color_name(bgr_color):
     """Convert BGR color to descriptive name using HSV"""
-    bgr_array = np.uint8([[bgr_color]])
-    hsv_color = cv2.cvtColor(bgr_array, cv2.COLOR_BGR2HSV)[0][0]
-    h, s, v = hsv_color
-    
-    if v < 50: return "Black"
-    if s < 40 and v > 200: return "White"
-    if s < 40 and 100 <= v <= 200: return "Gray"
-    if (0 <= h <= 10) or (170 <= h <= 180): return "Red"
-    elif 11 <= h <= 25: return "Orange"
-    elif 26 <= h <= 35: return "Yellow"
-    elif 36 <= h <= 85: return "Green"
-    elif 86 <= h <= 125: return "Blue"
-    elif 126 <= h <= 145: return "Purple"
-    elif 146 <= h <= 169: return "Pink"
-    elif 169 < h <= 180: return "Red"
-    else: return "Other"
+    try:
+        bgr_array = np.uint8([[bgr_color]])
+        hsv_color = cv2.cvtColor(bgr_array, cv2.COLOR_BGR2HSV)[0][0]
+        h, s, v = hsv_color
+        
+        if v < 50: return "Black"
+        if s < 40 and v > 200: return "White"
+        if s < 40 and 100 <= v <= 200: return "Gray"
+        if (0 <= h <= 10) or (170 <= h <= 180): return "Red"
+        elif 11 <= h <= 25: return "Orange"
+        elif 26 <= h <= 35: return "Yellow"
+        elif 36 <= h <= 85: return "Green"
+        elif 86 <= h <= 125: return "Blue"
+        elif 126 <= h <= 145: return "Purple"
+        elif 146 <= h <= 169: return "Pink"
+        elif 169 < h <= 180: return "Red"
+        else: return "Other"
+    except:
+        return "Unknown"
 
 def get_shape_name(contour):
-    """Improved shape detection with morphological consistency"""
-    peri = cv2.arcLength(contour, True)
-    approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
-    x, y, w, h = cv2.boundingRect(approx)
-    area = cv2.contourArea(contour)
-    
-    if area < 150:
-        return "Small"
-    
-    aspect_ratio = w / float(h)
-    hull = cv2.convexHull(contour)
-    hull_area = cv2.contourArea(hull)
-    solidity = area / hull_area if hull_area > 0 else 0
-    
-    # Shape classification with morphological consistency
-    if len(approx) == 3:
-        return "Triangle"
-    elif len(approx) == 4:
-        if 0.9 <= aspect_ratio <= 1.1 and solidity > 0.85:
-            return "Square"
+    """Improved shape detection"""
+    try:
+        peri = cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
+        x, y, w, h = cv2.boundingRect(approx)
+        area = cv2.contourArea(contour)
+        
+        if area < 100:
+            return "Small"
+        
+        aspect_ratio = w / float(h)
+        hull = cv2.convexHull(contour)
+        hull_area = cv2.contourArea(hull)
+        solidity = area / hull_area if hull_area > 0 else 0
+        
+        if len(approx) == 3:
+            return "Triangle"
+        elif len(approx) == 4:
+            if 0.9 <= aspect_ratio <= 1.1 and solidity > 0.85:
+                return "Square"
+            else:
+                return "Rectangle"
+        elif len(approx) > 6:
+            if 0.85 <= aspect_ratio <= 1.15 and solidity > 0.8:
+                return "Circle"
+            else:
+                return "Oval"
         else:
-            return "Rectangle"
-    elif len(approx) > 6:
-        if 0.85 <= aspect_ratio <= 1.15 and solidity > 0.8:
-            return "Circle"
-        else:
-            return "Oval"
-    else:
-        return "Irregular"
+            return "Irregular"
+    except:
+        return "Unknown"
 
 # ====================================================================
 # 2. Advanced Pill Detection with Multiple Strategies
 # ====================================================================
 
-def detect_pills_advanced(image, min_area=300, max_area=20000):
-    """Advanced pill detection with multiple strategies and morphological operations"""
+def detect_pills_advanced(image, min_area=300, max_area=20000, sensitivity=5, morph_level=3):
+    """Advanced pill detection with adjustable parameters"""
     original = image.copy()
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     
+    # Adjust parameters based on sensitivity
+    canny_low = max(10, 50 - sensitivity * 5)
+    canny_high = max(50, 150 - sensitivity * 10)
+    adaptive_size = 11 + sensitivity * 2
+    adaptive_c = 2 + sensitivity
+    
     # Multiple detection strategies
     masks = []
     
-    # Strategy 1: Edge detection with morphological enhancement
+    # Strategy 1: Edge detection
     blurred = cv2.GaussianBlur(gray, (7, 7), 2)
-    edges = cv2.Canny(blurred, 20, 80)
+    edges = cv2.Canny(blurred, canny_low, canny_high)
     edges = cv2.dilate(edges, np.ones((3,3), np.uint8), iterations=2)
     masks.append(edges)
     
-    # Strategy 2: Advanced adaptive thresholding
+    # Strategy 2: Adaptive thresholding
     adaptive = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                   cv2.THRESH_BINARY_INV, 21, 7)
+                                   cv2.THRESH_BINARY_INV, adaptive_size, adaptive_c)
     masks.append(adaptive)
     
-    # Strategy 3: Comprehensive color segmentation
-    # For light pills (white, yellow, light colors)
-    lower_light = np.array([0, 0, 120])
-    upper_light = np.array([180, 60, 255])
+    # Strategy 3: Otsu's thresholding
+    _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    masks.append(otsu)
     
-    # For colored pills (blue, green, red, etc.)
-    lower_color = np.array([0, 40, 40])
-    upper_color = np.array([180, 255, 220])
-    
-    # For dark pills (black, dark colors)
+    # Strategy 4: Color-based segmentation
+    # Wider color ranges for better detection
+    lower_light = np.array([0, 0, 100])
+    upper_light = np.array([180, 80, 255])
+    lower_color = np.array([0, 30, 30])
+    upper_color = np.array([180, 255, 255])
     lower_dark = np.array([0, 0, 0])
-    upper_dark = np.array([180, 255, 50])
+    upper_dark = np.array([180, 255, 100])
     
     mask_light = cv2.inRange(hsv, lower_light, upper_light)
     mask_color = cv2.inRange(hsv, lower_color, upper_color)
@@ -152,8 +165,8 @@ def detect_pills_advanced(image, min_area=300, max_area=20000):
     for mask in masks:
         combined_mask = cv2.bitwise_or(combined_mask, mask)
     
-    # Apply advanced morphological operations
-    final_mask = apply_morphological_operations(combined_mask)
+    # Apply morphological operations
+    final_mask = apply_morphological_operations(combined_mask, morph_level)
     
     # Find contours
     contours, _ = cv2.findContours(final_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -195,22 +208,13 @@ def detect_pills_advanced(image, min_area=300, max_area=20000):
                 cX = int(M["m10"] / M["m00"])
                 cY = int(M["m01"] / M["m00"])
                 cv2.putText(output_image, str(len(pill_data)), (cX - 15, cY), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
     
-    return output_image, pill_data, final_mask
+    return output_image, pill_data, final_mask, combined_mask
 
 # ====================================================================
-# 3. Streamlit UI with Manual ROI Drawing
+# 3. Streamlit UI with Advanced Controls
 # ====================================================================
-
-def get_image_download_link(img, filename="detected_pills.png"):
-    """Generate a download link for the image"""
-    buffered = io.BytesIO()
-    img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-    img_pil.save(buffered, format="PNG")
-    img_str = base64.b64encode(buffered.getvalue()).decode()
-    href = f'<a href="data:file/png;base64,{img_str}" download="{filename}">Download Result Image</a>'
-    return href
 
 # Initialize session state
 if 'original_image' not in st.session_state:
@@ -219,12 +223,12 @@ if 'processed_image' not in st.session_state:
     st.session_state.processed_image = None
 if 'detection_results' not in st.session_state:
     st.session_state.detection_results = None
-if 'roi_coords' not in st.session_state:
-    st.session_state.roi_coords = None
+if 'debug_masks' not in st.session_state:
+    st.session_state.debug_masks = None
 
-st.set_page_config(layout="wide", page_title="Advanced Pill Detector")
+st.set_page_config(layout="wide", page_title="Pill Detector Pro")
 st.title("💊 Advanced Pill Detection System")
-st.write("Upload an image and detect pills with manual ROI or full image analysis")
+st.write("Upload an image and adjust parameters for optimal detection")
 
 # Main layout
 col1, col2 = st.columns([1, 1])
@@ -234,52 +238,75 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Choose an image file", type=["jpg", "jpeg", "png", "bmp"])
     
     if uploaded_file:
-        st.header("⚙️ Detection Settings")
+        st.header("⚙️ Advanced Detection Settings")
         
-        min_area = st.slider("Minimum Pill Size", 100, 2000, 300, 
+        # Basic parameters
+        min_area = st.slider("Minimum Pill Size", 50, 2000, 100, 
                            help="Minimum area in pixels for pill detection")
-        max_area = st.slider("Maximum Pill Size", 1000, 50000, 20000,
+        max_area = st.slider("Maximum Pill Size", 500, 50000, 10000,
                            help="Maximum area in pixels for pill detection")
         
-        st.header("🎯 Detection Mode")
-        detection_mode = st.radio("Select detection mode:", 
-                                ["Full Image Analysis", "Manual ROI Selection"])
+        # Advanced parameters
+        st.subheader("Advanced Parameters")
+        sensitivity = st.slider("Detection Sensitivity", 1, 10, 5,
+                              help="Higher = more sensitive, may detect more noise")
+        morph_level = st.slider("Morphological Level", 1, 5, 3,
+                              help="Intensity of image cleaning operations")
         
-        if detection_mode == "Manual ROI Selection":
-            st.info("Draw a rectangle around the area containing pills")
-            roi_x = st.number_input("ROI X coordinate", 0, 1000, 0)
-            roi_y = st.number_input("ROI Y coordinate", 0, 1000, 0)
-            roi_width = st.number_input("ROI Width", 100, 1000, 300)
-            roi_height = st.number_input("ROI Height", 100, 1000, 300)
-            st.session_state.roi_coords = (roi_x, roi_y, roi_width, roi_height)
-        else:
-            st.session_state.roi_coords = None
+        st.header("🎯 Detection Mode")
+        detection_mode = st.radio("Select mode:", 
+                                ["Full Image Analysis", "Manual ROI"])
+        
+        roi_coords = None
+        if detection_mode == "Manual ROI":
+            st.info("Enter coordinates for ROI")
+            col1, col2 = st.columns(2)
+            with col1:
+                roi_x = st.number_input("X", 0, 2000, 0)
+                roi_y = st.number_input("Y", 0, 2000, 0)
+            with col2:
+                roi_w = st.number_input("Width", 100, 2000, 300)
+                roi_h = st.number_input("Height", 100, 2000, 300)
+            roi_coords = (roi_x, roi_y, roi_w, roi_h)
         
         if st.button("🚀 Detect Pills", type="primary", use_container_width=True):
-            with st.spinner("Analyzing image with advanced morphological operations..."):
-                # Load and process image
-                image_pil = Image.open(uploaded_file)
-                image_bgr = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
-                st.session_state.original_image = image_bgr
-                
-                # Apply ROI if selected
-                if st.session_state.roi_coords:
-                    x, y, w, h = st.session_state.roi_coords
-                    roi_image = image_bgr[y:y+h, x:x+w].copy()
-                    if roi_image.size == 0:
-                        st.error("Invalid ROI selection! Please adjust coordinates.")
+            with st.spinner("Analyzing image with advanced algorithms..."):
+                try:
+                    # Load image
+                    image_pil = Image.open(uploaded_file)
+                    image_bgr = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
+                    st.session_state.original_image = image_bgr
+                    
+                    # Apply ROI if selected
+                    if detection_mode == "Manual ROI" and roi_coords:
+                        x, y, w, h = roi_coords
+                        roi_image = image_bgr[y:y+h, x:x+w].copy()
+                        if roi_image.size == 0:
+                            st.error("Invalid ROI selection!")
+                        else:
+                            processed_img, results, final_mask, combined_mask = detect_pills_advanced(
+                                roi_image, min_area, max_area, sensitivity, morph_level
+                            )
+                            st.session_state.processed_image = processed_img
+                            st.session_state.detection_results = results
+                            st.session_state.debug_masks = {
+                                'final_mask': final_mask,
+                                'combined_mask': combined_mask
+                            }
                     else:
-                        processed_img, results, mask = detect_pills_advanced(roi_image, min_area, max_area)
-                        # Convert back to full image coordinates
-                        for result in results:
-                            result['Position'] = f"({x + int(result["Position"][1:-1].split(",")[0])},{y + int(result["Position"][1:-1].split(",")[1])})"
+                        # Full image analysis
+                        processed_img, results, final_mask, combined_mask = detect_pills_advanced(
+                            image_bgr, min_area, max_area, sensitivity, morph_level
+                        )
                         st.session_state.processed_image = processed_img
                         st.session_state.detection_results = results
-                else:
-                    # Full image analysis
-                    processed_img, results, mask = detect_pills_advanced(image_bgr, min_area, max_area)
-                    st.session_state.processed_image = processed_img
-                    st.session_state.detection_results = results
+                        st.session_state.debug_masks = {
+                            'final_mask': final_mask,
+                            'combined_mask': combined_mask
+                        }
+                        
+                except Exception as e:
+                    st.error(f"Error during detection: {str(e)}")
 
 # Display results
 if uploaded_file:
@@ -288,109 +315,91 @@ if uploaded_file:
         if st.session_state.original_image is not None:
             st.image(cv2.cvtColor(st.session_state.original_image, cv2.COLOR_BGR2RGB), 
                     use_container_width=True, caption="Original Image")
-            
-            if st.session_state.roi_coords:
-                x, y, w, h = st.session_state.roi_coords
-                roi_img = st.session_state.original_image.copy()
-                cv2.rectangle(roi_img, (x, y), (x + w, y + h), (255, 0, 0), 3)
-                st.image(cv2.cvtColor(roi_img, cv2.COLOR_BGR2RGB), 
-                        use_container_width=True, caption="Selected ROI Area")
 
     with col2:
-        if st.session_state.processed_image is not None and st.session_state.detection_results is not None:
+        if st.session_state.processed_image is not None:
             st.subheader("🔍 Detection Results")
             
             if st.session_state.detection_results:
-                # Display summary
                 total_pills = len(st.session_state.detection_results)
                 st.success(f"✅ Found {total_pills} pills")
                 
                 # Show processed image
                 st.image(cv2.cvtColor(st.session_state.processed_image, cv2.COLOR_BGR2RGB), 
-                        use_container_width=True, caption="Detected Pills (Green outlines)")
+                        use_container_width=True, caption="Detected Pills")
                 
                 # Create categorized results
                 df = pd.DataFrame(st.session_state.detection_results)
                 
-                # Group by color and shape for summary
+                # Group by color and shape
                 summary_df = df.groupby(['Color', 'Shape']).size().reset_index(name='Quantity')
                 summary_df = summary_df.sort_values('Quantity', ascending=False)
                 
                 st.subheader("📊 Categorized Results")
                 st.dataframe(summary_df, use_container_width=True)
                 
-                # Detailed results
-                st.subheader("📋 Detailed Analysis")
-                st.dataframe(df, use_container_width=True)
+                # Show individual results
+                with st.expander("📋 Detailed Results"):
+                    st.dataframe(df, use_container_width=True)
                 
                 # Statistics
                 st.subheader("📈 Statistics")
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Total Pills", total_pills)
-                with col2:
-                    st.metric("Unique Colors", df['Color'].nunique())
-                with col3:
-                    st.metric("Unique Shapes", df['Shape'].nunique())
-                with col4:
-                    avg_size = df['Area (px)'].mean()
-                    st.metric("Avg Size", f"{avg_size:.0f} px")
+                cols = st.columns(4)
+                metrics = [
+                    ("Total Pills", total_pills),
+                    ("Unique Colors", df['Color'].nunique()),
+                    ("Unique Shapes", df['Shape'].nunique()),
+                    ("Avg Size", f"{df['Area (px)'].mean():.0f} px")
+                ]
                 
-                # Visualizations
-                st.subheader("🎨 Distribution Charts")
-                
-                tab1, tab2 = st.tabs(["Color Distribution", "Shape Distribution"])
-                
-                with tab1:
-                    color_counts = df['Color'].value_counts()
-                    if not color_counts.empty:
-                        st.bar_chart(color_counts)
-                    else:
-                        st.info("No color data available")
-                
-                with tab2:
-                    shape_counts = df['Shape'].value_counts()
-                    if not shape_counts.empty:
-                        st.bar_chart(shape_counts)
-                    else:
-                        st.info("No shape data available")
+                for col, (label, value) in zip(cols, metrics):
+                    col.metric(label, value)
                 
             else:
                 st.warning("❌ No pills detected")
-                st.info("""
-                **Try these adjustments:**
-                - Decrease Minimum Pill Size
-                - Adjust ROI area if using manual selection
-                - Ensure good lighting and contrast
-                - Try different background
-                """)
-else:
-    st.info("👆 Please upload an image to begin analysis")
+                
+                # Debug information
+                with st.expander("🔧 Debug Information"):
+                    st.info("""
+                    **Try these adjustments:**
+                    1. ➕ Increase Sensitivity
+                    2. ➖ Decrease Minimum Pill Size
+                    3. 🔄 Adjust Morphological Level
+                    4. 🎯 Try Manual ROI mode
+                    5. 💡 Ensure good lighting in image
+                    """)
+                    
+                    if st.session_state.debug_masks:
+                        st.write("**Detection Masks:**")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.image(st.session_state.debug_masks['combined_mask'], 
+                                    caption="Initial Combined Mask", use_container_width=True)
+                        with col2:
+                            st.image(st.session_state.debug_masks['final_mask'], 
+                                    caption="Final Mask After Processing", use_container_width=True)
 
-# Footer with tips
-with st.expander("💡 Expert Tips"):
+# Tips section
+with st.expander("💡 Troubleshooting Guide"):
     st.markdown("""
-    **For best results:**
+    **If pills are not being detected:**
     
-    🎯 **Detection Modes:**
-    - **Full Image Analysis**: Automatically scans entire image
-    - **Manual ROI**: Draw specific area for focused analysis
+    1. **Adjust Sensitivity**: Increase to detect more objects
+    2. **Size Settings**: 
+       - Decrease Minimum Pill Size for small pills
+       - Increase Maximum Pill Size for large pills
+    3. **Morphological Level**: 
+       - Increase for cleaner detection (good for noisy images)
+       - Decrease for more sensitive detection
+    4. **Try Manual ROI**: Select specific areas with pills
+    5. **Image Quality**: Ensure good contrast and lighting
     
-    ⚡ **Morphological Operations:**
-    - Advanced cleaning removes noise
-    - Handles overlapping pills better
-    - Works with various backgrounds
-    
-    🎨 **Color & Shape Detection:**
-    - Uses K-means clustering for accurate color identification
-    - Advanced geometric analysis for shape classification
-    - Handles irregular shapes and various pill types
-    
-    ⚙️ **Parameter Guidance:**
-    - **Min Size**: Adjust based on smallest pill size
-    - **Max Size**: Adjust for largest pills
-    - Use manual ROI for crowded or complex images
+    **Common Issues:**
+    - Pills too small → Decrease Minimum Pill Size
+    - Background detected as pills → Increase Minimum Pill Size
+    - Pills not detected → Increase Sensitivity
+    - Over-detection → Decrease Sensitivity
     """)
 
 st.markdown("---")
-st.caption("Advanced Pill Detection System v4.0 | Morphological Operations + Robust Background Handling")
+st.caption("Pill Detection System | Advanced computer vision with adjustable parameters")
