@@ -45,6 +45,11 @@ def count_pills(image, roi_coords):
 
     # --- 5. Calculate ROI area for filtering ---
     x, y, w, h = roi_coords
+    # Ensure width and height are not zero to avoid division errors
+    if w == 0 or h == 0:
+        st.error("The drawn box has no area. Please draw a valid box.")
+        return cv2.cvtColor(image, cv2.COLOR_BGR2RGB), 0
+        
     roi_area = w * h
     min_area = roi_area * 0.5  # Allow for 50% smaller
     max_area = roi_area * 1.5  # Allow for 50% larger
@@ -89,25 +94,17 @@ with st.sidebar:
 
 # --- Main Content Area ---
 if uploaded_file is not None:
-    # Convert the uploaded file to an OpenCV image
+    # Convert the uploaded file to a PIL Image
     pil_image = Image.open(uploaded_file)
-    st_image = np.array(pil_image)
     
-    # Check if the image has an alpha channel and remove it
-    if st_image.shape[2] == 4:
-        st_image = st_image[:, :, :3]
-        
-    # Convert RGB from PIL to BGR for OpenCV
-    cv_image = cv2.cvtColor(st_image, cv2.COLOR_RGB2BGR)
-
     st.subheader("Step 1: Draw a box around a sample pill")
     
-    # Create a canvas component
+    # Create a canvas component for the user to draw on
     canvas_result = st_canvas(
-        fill_color="rgba(255, 165, 0, 0.3)",  # Fixed fill color with some opacity
+        fill_color="rgba(255, 165, 0, 0.3)",  # Orange fill with transparency
         stroke_width=stroke_width,
         stroke_color=stroke_color,
-        background_image=pil_image,
+        background_image=pil_image, # Pass the PIL image here
         update_streamlit=True,
         height=pil_image.height,
         width=pil_image.width,
@@ -117,28 +114,28 @@ if uploaded_file is not None:
 
     # Check if the user has drawn a rectangle
     if canvas_result.json_data is not None and len(canvas_result.json_data["objects"]) > 0:
-        # Extract ROI coordinates from the drawn rectangle
+        # Extract ROI coordinates from the first drawn rectangle
         rect = canvas_result.json_data["objects"][0]
         left, top, width, height = int(rect["left"]), int(rect["top"]), int(rect["width"]), int(rect["height"])
         
-        # Ensure coordinates are valid
+        # Ensure coordinates are valid before showing the button
         if width > 0 and height > 0:
             roi_coords = (left, top, width, height)
             
             st.subheader("Step 2: Process the image")
             if st.button('Count Pills'):
-                with st.spinner('Processing...'):
+                with st.spinner('Analyzing image...'):
+                    # Convert PIL image to OpenCV format for processing
+                    cv_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+                    
                     # Perform the pill counting
                     result_image, count = count_pills(cv_image, roi_coords)
 
                     # Display the results
                     st.subheader("Results")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.image(result_image, caption="Processed Image", use_column_width=True)
-                    with col2:
-                        st.metric(label="Total Pills Counted", value=count)
-                        st.info("Note: The count is based on objects similar in size to your selection.")
+                    st.image(result_image, caption="Processed Image", use_column_width=True)
+                    st.success(f"**Total Pills Counted: {count}**")
+                    st.info("Note: The count is based on objects similar in size to your selection.")
 
 else:
     st.info("Please upload an image to begin.")
