@@ -15,12 +15,21 @@ st.set_page_config(
 )
 
 # --------------------------------------------------------------------------------
+# Helper Function to Resize Image
+# --------------------------------------------------------------------------------
+def resize_image(image, max_width=600):
+    """Resizes a PIL image to a max width while maintaining aspect ratio."""
+    if image.width > max_width:
+        ratio = max_width / image.width
+        new_height = int(image.height * ratio)
+        return image.resize((max_width, new_height), Image.Resampling.LANCZOS)
+    return image
+
+# --------------------------------------------------------------------------------
 # Core Image Processing Function
 # --------------------------------------------------------------------------------
 def count_pills(image, roi_coords):
-    """
-    Processes the uploaded image to count pills based on a selected ROI.
-    """
+    """Processes the uploaded image to count pills based on a selected ROI."""
     gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred_image = cv2.GaussianBlur(gray_image, (7, 7), 0)
     _, binary_mask = cv2.threshold(blurred_image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
@@ -72,7 +81,16 @@ with st.sidebar:
 
 if uploaded_file is not None:
     pil_image = Image.open(uploaded_file)
-    cv_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+    
+    # --- FIX 1: Handle RGBA (transparency) images ---
+    if pil_image.mode == 'RGBA':
+        pil_image = pil_image.convert('RGB')
+        
+    # --- FIX 2: Resize the image to a manageable size ---
+    resized_pil_image = resize_image(pil_image, max_width=700)
+    
+    # Convert to OpenCV format for processing later
+    cv_image = cv2.cvtColor(np.array(resized_pil_image), cv2.COLOR_RGB2BGR)
 
     st.subheader("Step 1: Draw a box around a sample pill")
     
@@ -80,22 +98,24 @@ if uploaded_file is not None:
         fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=stroke_width,
         stroke_color=stroke_color,
-        background_image=pil_image,
+        background_image=resized_pil_image,  # Use the resized image
         update_streamlit=True,
-        height=pil_image.height,
-        width=pil_image.width,
+        height=resized_pil_image.height,
+        width=resized_pil_image.width,
         drawing_mode="rect",
         key="canvas",
     )
 
     if canvas_result.json_data is not None and len(canvas_result.json_data["objects"]) > 0:
         rect = canvas_result.json_data["objects"][0]
+        # The coordinates from the canvas are already scaled to the resized image
         roi_coords = (int(rect["left"]), int(rect["top"]), int(rect["width"]), int(rect["height"]))
         
         if roi_coords[2] > 0 and roi_coords[3] > 0:
             st.subheader("Step 2: Process the image")
             if st.button('Count Pills'):
                 with st.spinner('Analyzing image...'):
+                    # We process the resized cv_image
                     result_image, count = count_pills(cv_image, roi_coords)
                     st.subheader("Results")
                     st.image(result_image, caption="Processed Image", use_column_width=True)
