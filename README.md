@@ -2,7 +2,7 @@
 
 
 
-!\[Pill Counter App Screenshot](https://user-images.githubusercontent.com/\[Your GitHub Username]/\[Your Repo Name]/screenshot.png)
+!\[Pill Counter App Screenshot](https://user-images.githubusercontent.com/\[Nat445566]/\[pill-detector-]/screenshot.png)
 
 
 
@@ -155,4 +155,5 @@ The core logic of the pill counter follows these steps:
 
 
 This project is licensed under the MIT License. See the `LICENSE` file for details.
+
 
