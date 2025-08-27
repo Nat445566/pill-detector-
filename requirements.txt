@@ -1,10 +1,5 @@
 streamlit
-opencv-python-headless
 numpy
-pandas
+opencv-python-headless
 Pillow
-scikit-learn
-scikit-image        
-matplotlib         
-plotly              
-# test
+streamlit-drawable-canvas
