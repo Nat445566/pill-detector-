@@ -10,123 +10,148 @@ from streamlit_drawable_canvas import st_canvas
 st.set_page_config(
     page_title="Smart Pill Counter",
     page_icon="💊",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
 # --------------------------------------------------------------------------------
-# Core Image Processing Function for Counting
+# Core Image Processing Pipeline (Based on BMDS2133 Handbook)
 # --------------------------------------------------------------------------------
-def count_pills(image_cv, roi_coords):
-    """Processes an OpenCV image to count pills based on a selected ROI."""
+def get_pill_contours(image_cv):
+    """
+    This function takes an OpenCV image and performs a series of operations
+    based on the practical handbook to return the contours of the pills.
+    """
+    # Step 1: Grayscale Conversion (Practicals 1 & 3)
     gray_image = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
+
+    # Step 2: Gaussian Blurring (Handbook p. 38)
+    # This reduces noise and improves thresholding
     blurred_image = cv2.GaussianBlur(gray_image, (7, 7), 0)
+
+    # Step 3: Otsu's Binarization (Handbook p. 33)
+    # This automatically finds the best threshold to separate pills from the background
     _, binary_mask = cv2.threshold(blurred_image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
+    # Step 4: Morphological Operations (Practical 7)
+    # Use 'Opening' to remove small noise and 'Closing' to fill holes in pills
     kernel = np.ones((5, 5), np.uint8)
     cleaned_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel, iterations=2)
     cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
 
+    # Step 5: Find Contours
+    # This finds the outlines of all the separated objects (pills)
     contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    x, y, w, h = roi_coords
-    if w <= 0 or h <= 0:
-        return cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB), 0, "Error: The drawn box has no area."
-
-    roi_area = w * h
-    min_area = roi_area * 0.5
-    max_area = roi_area * 1.5
-
-    pill_count = 0
-    output_image = cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB)
-
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if min_area < area < max_area:
-            pill_count += 1
-            cv2.drawContours(output_image, [cnt], -1, (0, 255, 0), 3)
-
-    return output_image, pill_count, None
+    
+    return contours
 
 # --------------------------------------------------------------------------------
 # Streamlit UI
 # --------------------------------------------------------------------------------
 st.title("💊 Smart Pill Counting System")
-st.markdown("Upload an image, draw a box around a single sample pill, and press 'Count Pills' to get the total count.")
+st.markdown("Based on the **BMDS2133 Image Processing Handbook**. This tool allows you to count pills from an image using two different methods.")
 
+# --- Sidebar for Uploads and Settings ---
 with st.sidebar:
-    st.header("Instructions")
-    st.markdown("""
-        1.  **Upload Image:** Select an image of pills.
-        2.  **Select Sample Pill:** Draw a rectangle around ONE complete pill.
-        3.  **Count Pills:** Click the 'Count Pills' button.
-    """)
-    st.header("Upload Image")
-    # Add a key to the file_uploader for better state management
-    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"], key="file_uploader")
+    st.header("⚙️ Settings")
+    
+    uploaded_file = st.file_uploader("1. Upload your image", type=["jpg", "jpeg", "png"])
+    
+    analysis_mode = st.radio(
+        "2. Choose Analysis Mode",
+        ('Count with ROI (Select a Sample)', 'Count All Pills (Full Image Analysis)')
+    )
 
-    stroke_width = st.slider("Box Stroke Width: ", 1, 25, 3)
-    stroke_color = st.color_picker("Box Stroke Color: ", "#00FF00")
+    if analysis_mode == 'Count All Pills (Full Image Analysis)':
+        st.subheader("Full Analysis Settings")
+        min_area = st.slider("Minimum Pill Area", 100, 5000, 500)
+        max_area = st.slider("Maximum Pill Area", 500, 20000, 10000)
 
-# --- Logic to handle image loading and persisting it in session_state ---
+# --- Logic to handle image loading and state correctly ---
 if uploaded_file is not None:
-    # Check if a new file has been uploaded. We use the file's unique ID for this.
-    if "file_id" not in st.session_state or st.session_state.file_id != uploaded_file.file_id:
-        st.session_state.file_id = uploaded_file.file_id
+    # Read the file bytes and store in session state to persist across reruns
+    if 'file_bytes' not in st.session_state or uploaded_file.getvalue() != st.session_state.get('file_bytes'):
+        st.session_state.file_bytes = uploaded_file.getvalue()
         
-        # Read and process the image ONCE
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        opencv_image = cv2.imdecode(file_bytes, 1)
+        # Process the image ONCE and store the display version in session state
+        nparr = np.frombuffer(st.session_state.file_bytes, np.uint8)
+        opencv_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         rgb_image = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_image)
 
-        # Resize the image for a better UI experience
+        # Resize for display
         if pil_image.width > 700:
-            ratio = 700 / float(pil_image.width)
+            ratio = 700 / pil_image.width
             new_height = int(pil_image.height * ratio)
             pil_image = pil_image.resize((700, new_height), Image.Resampling.LANCZOS)
         
-        # Store the processed, displayable image in session_state
         st.session_state.display_image = pil_image
 
-# --- Display logic: only show canvas if there is an image in the session state ---
-if "display_image" in st.session_state and st.session_state.display_image is not None:
+# --- Main app logic based on selected mode ---
+if 'display_image' in st.session_state:
     display_image = st.session_state.display_image
     
-    st.subheader("Step 1: Draw a box around a sample pill")
-
-    canvas_result = st_canvas(
-        fill_color="rgba(255, 165, 0, 0.3)",
-        stroke_width=stroke_width,
-        stroke_color=stroke_color,
-        background_image=display_image,
-        update_streamlit=True,
-        height=display_image.height,
-        width=display_image.width,
-        drawing_mode="rect",
-        key="canvas",
-    )
-
-    if canvas_result.json_data is not None and len(canvas_result.json_data["objects"]) > 0:
-        rect = canvas_result.json_data["objects"][0]
-        roi_coords = (int(rect["left"]), int(rect["top"]), int(rect["width"]), int(rect["height"]))
+    if analysis_mode == 'Count with ROI (Select a Sample)':
+        st.subheader("Step 1: Draw a box around a sample pill")
         
-        if roi_coords[2] > 0 and roi_coords[3] > 0:
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 165, 0, 0.3)",
+            stroke_width=3,
+            background_image=display_image,
+            height=display_image.height,
+            width=display_image.width,
+            drawing_mode="rect",
+            key="canvas_roi"
+        )
+
+        if canvas_result.json_data is not None and len(canvas_result.json_data["objects"]) > 0:
             st.subheader("Step 2: Process the image")
-            if st.button('Count Pills'):
-                with st.spinner('Analyzing image...'):
-                    image_to_process = cv2.cvtColor(np.array(display_image), cv2.COLOR_RGB2BGR)
-                    result_image, count, error_msg = count_pills(image_to_process, roi_coords)
+            if st.button("Count Pills using ROI"):
+                with st.spinner("Analyzing..."):
+                    rect = canvas_result.json_data["objects"][0]
+                    roi_w, roi_h = rect['width'], rect['height']
                     
-                    if error_msg:
-                        st.error(error_msg)
-                    else:
+                    if roi_w > 0 and roi_h > 0:
+                        roi_area = roi_w * roi_h
+                        image_to_process = cv2.cvtColor(np.array(display_image), cv2.COLOR_RGB2BGR)
+                        contours = get_pill_contours(image_to_process)
+                        
+                        pill_count = 0
+                        output_image = cv2.cvtColor(image_to_process, cv2.COLOR_BGR2RGB)
+                        
+                        for cnt in contours:
+                            area = cv2.contourArea(cnt)
+                            if (roi_area * 0.5) < area < (roi_area * 1.5):
+                                pill_count += 1
+                                cv2.drawContours(output_image, [cnt], -1, (0, 255, 0), 3)
+
                         st.subheader("Results")
-                        st.image(result_image, caption="Processed Image", use_column_width=True)
-                        st.success(f"**Total Pills Counted: {count}**")
+                        st.image(output_image, caption=f"Found {pill_count} pills similar to the sample.")
+                        st.success(f"**Total Pills Counted: {pill_count}**")
+                    else:
+                        st.error("Please draw a valid box with a positive area.")
+
+    elif analysis_mode == 'Count All Pills (Full Image Analysis)':
+        st.subheader("Step 1: Review Image and Settings")
+        st.image(display_image, caption="Uploaded Image")
+        st.markdown(f"The app will count pills with an area between **{min_area}** and **{max_area}** pixels.")
+        
+        st.subheader("Step 2: Process the image")
+        if st.button("Count All Pills"):
+            with st.spinner("Analyzing..."):
+                image_to_process = cv2.cvtColor(np.array(display_image), cv2.COLOR_RGB2BGR)
+                contours = get_pill_contours(image_to_process)
+                
+                pill_count = 0
+                output_image = cv2.cvtColor(image_to_process, cv2.COLOR_BGR2RGB)
+                
+                for cnt in contours:
+                    area = cv2.contourArea(cnt)
+                    if min_area < area < max_area:
+                        pill_count += 1
+                        cv2.drawContours(output_image, [cnt], -1, (0, 255, 0), 3)
+                
+                st.subheader("Results")
+                st.image(output_image, caption=f"Found {pill_count} pills within the specified size range.")
+                st.success(f"**Total Pills Counted: {pill_count}**")
 else:
-    # If the user removes the file, clear the session state to remove the old image
-    st.info("Please upload an image to begin.")
-    for key in ["display_image", "file_id"]:
-        if key in st.session_state:
-            del st.session_state[key]
+    st.info("Please upload an image to get started.")
