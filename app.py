@@ -15,36 +15,37 @@ st.set_page_config(
 )
 
 # --------------------------------------------------------------------------------
-# NEW CACHED FUNCTION to load and process the image reliably
+# Caching the image processing to prevent re-computation
+# This function takes the raw bytes of the image as input
 # --------------------------------------------------------------------------------
 @st.cache_data
-def load_image(uploaded_file):
+def process_and_resize_image(file_bytes, max_width=700):
     """
-    Reads an uploaded file, decodes it with OpenCV, converts to RGB,
-    and returns it as a PIL Image. This is cached to prevent reloading on every script rerun.
+    Loads image bytes, decodes with OpenCV, converts to RGB, resizes,
+    and returns a PIL Image. This is cached so it only runs once per upload.
     """
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    opencv_image = cv2.imdecode(file_bytes, 1)
+    # Convert bytes to a NumPy array
+    nparr = np.frombuffer(file_bytes, np.uint8)
+    # Decode the image using OpenCV
+    opencv_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    # Convert from BGR (OpenCV) to RGB (Pillow)
     rgb_image = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
+    # Create a PIL Image from the NumPy array
     pil_image = Image.fromarray(rgb_image)
+    
+    # Resize the image while maintaining aspect ratio
+    if pil_image.width > max_width:
+        ratio = max_width / float(pil_image.width)
+        new_height = int(pil_image.height * ratio)
+        pil_image = pil_image.resize((max_width, new_height), Image.Resampling.LANCZOS)
+        
     return pil_image
 
 # --------------------------------------------------------------------------------
-# Helper Function to Resize Image
-# --------------------------------------------------------------------------------
-def resize_image(image, max_width=700):
-    """Resizes a PIL image to a max width while maintaining aspect ratio."""
-    if image.width > max_width:
-        ratio = max_width / float(image.width)
-        new_height = int(image.height * ratio)
-        return image.resize((max_width, new_height), Image.Resampling.LANCZOS)
-    return image
-
-# --------------------------------------------------------------------------------
-# Core Image Processing Function
+# Core Image Processing Function for Counting
 # --------------------------------------------------------------------------------
 def count_pills(image_cv, roi_coords):
-    """Processes the uploaded image to count pills based on a selected ROI."""
+    """Processes an OpenCV image to count pills based on a selected ROI."""
     gray_image = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
     blurred_image = cv2.GaussianBlur(gray_image, (7, 7), 0)
     _, binary_mask = cv2.threshold(blurred_image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
@@ -57,8 +58,7 @@ def count_pills(image_cv, roi_coords):
 
     x, y, w, h = roi_coords
     if w <= 0 or h <= 0:
-        st.error("The drawn box has no area. Please draw a valid box.")
-        return cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB), 0
+        return cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB), 0, "Error: The drawn box has no area."
 
     roi_area = w * h
     min_area = roi_area * 0.5
@@ -73,7 +73,7 @@ def count_pills(image_cv, roi_coords):
             pill_count += 1
             cv2.drawContours(output_image, [cnt], -1, (0, 255, 0), 3)
 
-    return output_image, pill_count
+    return output_image, pill_count, None
 
 # --------------------------------------------------------------------------------
 # Streamlit UI
@@ -95,9 +95,11 @@ with st.sidebar:
     stroke_color = st.color_picker("Box Stroke Color: ", "#00FF00")
 
 if uploaded_file is not None:
-    # MODIFIED: Call the cached function to load the image
-    pil_image = load_image(uploaded_file)
-    resized_pil_image = resize_image(pil_image)
+    # Read the file bytes ONCE
+    file_bytes = uploaded_file.getvalue()
+    
+    # Call the cached function to process the bytes and get a displayable PIL image
+    display_image = process_and_resize_image(file_bytes)
     
     st.subheader("Step 1: Draw a box around a sample pill")
 
@@ -105,10 +107,10 @@ if uploaded_file is not None:
         fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=stroke_width,
         stroke_color=stroke_color,
-        background_image=resized_pil_image,
+        background_image=display_image,  # Use the processed image for the canvas
         update_streamlit=True,
-        height=resized_pil_image.height,
-        width=resized_pil_image.width,
+        height=display_image.height,
+        width=display_image.width,
         drawing_mode="rect",
         key="canvas",
     )
@@ -121,11 +123,17 @@ if uploaded_file is not None:
             st.subheader("Step 2: Process the image")
             if st.button('Count Pills'):
                 with st.spinner('Analyzing image...'):
-                    image_to_process = cv2.cvtColor(np.array(resized_pil_image), cv2.COLOR_RGB2BGR)
-                    result_image, count = count_pills(image_to_process, roi_coords)
+                    # Convert the display image to OpenCV format for processing
+                    image_to_process = cv2.cvtColor(np.array(display_image), cv2.COLOR_RGB2BGR)
                     
-                    st.subheader("Results")
-                    st.image(result_image, caption="Processed Image", use_column_width=True)
-                    st.success(f"**Total Pills Counted: {count}**")
+                    # Run the counting function
+                    result_image, count, error_msg = count_pills(image_to_process, roi_coords)
+                    
+                    if error_msg:
+                        st.error(error_msg)
+                    else:
+                        st.subheader("Results")
+                        st.image(result_image, caption="Processed Image", use_column_width=True)
+                        st.success(f"**Total Pills Counted: {count}**")
 else:
     st.info("Please upload an image to begin.")
