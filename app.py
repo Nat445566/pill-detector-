@@ -15,6 +15,21 @@ st.set_page_config(
 )
 
 # --------------------------------------------------------------------------------
+# NEW CACHED FUNCTION to load and process the image reliably
+# --------------------------------------------------------------------------------
+@st.cache_data
+def load_image(uploaded_file):
+    """
+    Reads an uploaded file, decodes it with OpenCV, converts to RGB,
+    and returns it as a PIL Image. This is cached to prevent reloading on every script rerun.
+    """
+    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+    opencv_image = cv2.imdecode(file_bytes, 1)
+    rgb_image = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(rgb_image)
+    return pil_image
+
+# --------------------------------------------------------------------------------
 # Helper Function to Resize Image
 # --------------------------------------------------------------------------------
 def resize_image(image, max_width=700):
@@ -80,19 +95,8 @@ with st.sidebar:
     stroke_color = st.color_picker("Box Stroke Color: ", "#00FF00")
 
 if uploaded_file is not None:
-    # --- FIX: Robust image loading ---
-    # Read the file's bytes and convert to a NumPy array
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    # Use OpenCV to decode the NumPy array into an image
-    opencv_image = cv2.imdecode(file_bytes, 1) # 1 means cv2.IMREAD_COLOR
-
-    # Convert from OpenCV's BGR format to RGB for display
-    rgb_image = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
-    
-    # Now convert the standardized RGB NumPy array to a PIL Image
-    pil_image = Image.fromarray(rgb_image)
-    
-    # Resize the image for a better UI experience
+    # MODIFIED: Call the cached function to load the image
+    pil_image = load_image(uploaded_file)
     resized_pil_image = resize_image(pil_image)
     
     st.subheader("Step 1: Draw a box around a sample pill")
@@ -101,7 +105,7 @@ if uploaded_file is not None:
         fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=stroke_width,
         stroke_color=stroke_color,
-        background_image=resized_pil_image,  # Use the resized PIL image for the canvas
+        background_image=resized_pil_image,
         update_streamlit=True,
         height=resized_pil_image.height,
         width=resized_pil_image.width,
@@ -117,10 +121,7 @@ if uploaded_file is not None:
             st.subheader("Step 2: Process the image")
             if st.button('Count Pills'):
                 with st.spinner('Analyzing image...'):
-                    # Convert the resized PIL image back to OpenCV format for processing
                     image_to_process = cv2.cvtColor(np.array(resized_pil_image), cv2.COLOR_RGB2BGR)
-                    
-                    # Run the counting function
                     result_image, count = count_pills(image_to_process, roi_coords)
                     
                     st.subheader("Results")
