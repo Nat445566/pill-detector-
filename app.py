@@ -62,35 +62,39 @@ with st.sidebar:
         3.  **Count Pills:** Click the 'Count Pills' button.
     """)
     st.header("Upload Image")
-    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+    # Add a key to the file_uploader for better state management
+    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"], key="file_uploader")
 
     stroke_width = st.slider("Box Stroke Width: ", 1, 25, 3)
     stroke_color = st.color_picker("Box Stroke Color: ", "#00FF00")
 
-# --- Logic to handle image loading and state ---
+# --- Logic to handle image loading and persisting it in session_state ---
 if uploaded_file is not None:
-    # Check if a new file has been uploaded
-    if "uploaded_file_name" not in st.session_state or st.session_state.uploaded_file_name != uploaded_file.name:
-        st.session_state.uploaded_file_name = uploaded_file.name
+    # Check if a new file has been uploaded. We use the file's unique ID for this.
+    if "file_id" not in st.session_state or st.session_state.file_id != uploaded_file.file_id:
+        st.session_state.file_id = uploaded_file.file_id
         
-        # Read and process the image ONCE and store it in session_state
+        # Read and process the image ONCE
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         opencv_image = cv2.imdecode(file_bytes, 1)
         rgb_image = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_image)
 
-        # Resize the image
+        # Resize the image for a better UI experience
         if pil_image.width > 700:
             ratio = 700 / float(pil_image.width)
             new_height = int(pil_image.height * ratio)
             pil_image = pil_image.resize((700, new_height), Image.Resampling.LANCZOS)
         
+        # Store the processed, displayable image in session_state
         st.session_state.display_image = pil_image
 
-if "display_image" in st.session_state:
+# --- Display logic: only show canvas if there is an image in the session state ---
+if "display_image" in st.session_state and st.session_state.display_image is not None:
+    display_image = st.session_state.display_image
+    
     st.subheader("Step 1: Draw a box around a sample pill")
 
-    display_image = st.session_state.display_image
     canvas_result = st_canvas(
         fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=stroke_width,
@@ -120,10 +124,9 @@ if "display_image" in st.session_state:
                         st.subheader("Results")
                         st.image(result_image, caption="Processed Image", use_column_width=True)
                         st.success(f"**Total Pills Counted: {count}**")
-elif uploaded_file is None:
+else:
+    # If the user removes the file, clear the session state to remove the old image
     st.info("Please upload an image to begin.")
-    # Clear session state if the file is removed
-    if "display_image" in st.session_state:
-        del st.session_state.display_image
-    if "uploaded_file_name" in st.session_state:
-        del st.session_state.uploaded_file_name
+    for key in ["display_image", "file_id"]:
+        if key in st.session_state:
+            del st.session_state[key]
