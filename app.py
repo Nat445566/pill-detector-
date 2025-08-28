@@ -15,33 +15,6 @@ st.set_page_config(
 )
 
 # --------------------------------------------------------------------------------
-# Caching the image processing to prevent re-computation
-# This function takes the raw bytes of the image as input
-# --------------------------------------------------------------------------------
-@st.cache_data
-def process_and_resize_image(file_bytes, max_width=700):
-    """
-    Loads image bytes, decodes with OpenCV, converts to RGB, resizes,
-    and returns a PIL Image. This is cached so it only runs once per upload.
-    """
-    # Convert bytes to a NumPy array
-    nparr = np.frombuffer(file_bytes, np.uint8)
-    # Decode the image using OpenCV
-    opencv_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    # Convert from BGR (OpenCV) to RGB (Pillow)
-    rgb_image = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
-    # Create a PIL Image from the NumPy array
-    pil_image = Image.fromarray(rgb_image)
-    
-    # Resize the image while maintaining aspect ratio
-    if pil_image.width > max_width:
-        ratio = max_width / float(pil_image.width)
-        new_height = int(pil_image.height * ratio)
-        pil_image = pil_image.resize((max_width, new_height), Image.Resampling.LANCZOS)
-        
-    return pil_image
-
-# --------------------------------------------------------------------------------
 # Core Image Processing Function for Counting
 # --------------------------------------------------------------------------------
 def count_pills(image_cv, roi_coords):
@@ -94,20 +67,35 @@ with st.sidebar:
     stroke_width = st.slider("Box Stroke Width: ", 1, 25, 3)
     stroke_color = st.color_picker("Box Stroke Color: ", "#00FF00")
 
+# --- Logic to handle image loading and state ---
 if uploaded_file is not None:
-    # Read the file bytes ONCE
-    file_bytes = uploaded_file.getvalue()
-    
-    # Call the cached function to process the bytes and get a displayable PIL image
-    display_image = process_and_resize_image(file_bytes)
-    
+    # Check if a new file has been uploaded
+    if "uploaded_file_name" not in st.session_state or st.session_state.uploaded_file_name != uploaded_file.name:
+        st.session_state.uploaded_file_name = uploaded_file.name
+        
+        # Read and process the image ONCE and store it in session_state
+        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        opencv_image = cv2.imdecode(file_bytes, 1)
+        rgb_image = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb_image)
+
+        # Resize the image
+        if pil_image.width > 700:
+            ratio = 700 / float(pil_image.width)
+            new_height = int(pil_image.height * ratio)
+            pil_image = pil_image.resize((700, new_height), Image.Resampling.LANCZOS)
+        
+        st.session_state.display_image = pil_image
+
+if "display_image" in st.session_state:
     st.subheader("Step 1: Draw a box around a sample pill")
 
+    display_image = st.session_state.display_image
     canvas_result = st_canvas(
         fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=stroke_width,
         stroke_color=stroke_color,
-        background_image=display_image,  # Use the processed image for the canvas
+        background_image=display_image,
         update_streamlit=True,
         height=display_image.height,
         width=display_image.width,
@@ -123,10 +111,7 @@ if uploaded_file is not None:
             st.subheader("Step 2: Process the image")
             if st.button('Count Pills'):
                 with st.spinner('Analyzing image...'):
-                    # Convert the display image to OpenCV format for processing
                     image_to_process = cv2.cvtColor(np.array(display_image), cv2.COLOR_RGB2BGR)
-                    
-                    # Run the counting function
                     result_image, count, error_msg = count_pills(image_to_process, roi_coords)
                     
                     if error_msg:
@@ -135,5 +120,10 @@ if uploaded_file is not None:
                         st.subheader("Results")
                         st.image(result_image, caption="Processed Image", use_column_width=True)
                         st.success(f"**Total Pills Counted: {count}**")
-else:
+elif uploaded_file is None:
     st.info("Please upload an image to begin.")
+    # Clear session state if the file is removed
+    if "display_image" in st.session_state:
+        del st.session_state.display_image
+    if "uploaded_file_name" in st.session_state:
+        del st.session_state.uploaded_file_name
