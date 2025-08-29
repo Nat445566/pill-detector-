@@ -57,8 +57,11 @@ with st.sidebar:
 
     # This logic processes and stores the image in session_state ONCE per upload
     if uploaded_file is not None:
-        if "current_file_id" not in st.session_state or st.session_state.current_file_id != uploaded_file.id:
-            st.session_state.current_file_id = uploaded_file.id
+        # Check if a new file has been uploaded using its unique file_id
+        if "current_file_id" not in st.session_state or st.session_state.current_file_id != uploaded_file.file_id:
+            # THIS IS THE CORRECTED LINE
+            st.session_state.current_file_id = uploaded_file.file_id
+            
             file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
             opencv_image = cv2.imdecode(file_bytes, 1)
             rgb_image = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
