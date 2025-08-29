@@ -21,32 +21,19 @@ def get_pill_contours(image_cv, show_steps=False):
     Takes an OpenCV image and returns the contours of the pills using a
     pipeline based on the practical handbook.
     """
-    # Practical 1 & 3: Grayscale Conversion
     gray_image = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
-    
-    # Handbook p. 38: Gaussian Blurring for noise reduction
     blurred_image = cv2.GaussianBlur(gray_image, (7, 7), 0)
-
-    # Handbook p. 32: USE ADAPTIVE THRESHOLDING for uneven lighting
-    # This is the key change for better accuracy on complex backgrounds.
     binary_mask = cv2.adaptiveThreshold(
         blurred_image, 255, 
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY_INV, # Use INV since pills are often darker than background
+        cv2.THRESH_BINARY_INV, 
         blockSize=15, C=4 
     )
-
-    # Practical 7 (p. 64-67): Morphological Operations to clean the mask
     kernel = np.ones((3, 3), np.uint8)
-    # Closing fills small holes inside the pills
     cleaned_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel, iterations=3)
-    # Opening removes small noise specks around the pills
     cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel, iterations=3)
-
-    # Find and return the final contours
     contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # Optional: Display intermediate steps for debugging
     if show_steps:
         with st.expander("Show Processing Steps"):
             col1, col2, col3 = st.columns(3)
@@ -62,18 +49,15 @@ def get_pill_contours(image_cv, show_steps=False):
 st.title("💊 Smart Pill Counting System (OpenCV Edition)")
 st.markdown("Built using the **BMDS2133 Image Processing Handbook**. This tool allows you to count pills from an image using two different methods.")
 
-# Initialize session state variables
 if 'display_image' not in st.session_state:
     st.session_state.display_image = None
 if 'current_file_id' not in st.session_state:
     st.session_state.current_file_id = None
 
-# --- Sidebar ---
 with st.sidebar:
     st.header("⚙️ Settings")
     uploaded_file = st.file_uploader("1. Upload your image", type=["jpg", "jpeg", "png"])
     
-    # Process and store the image in session_state ONCE per new upload
     if uploaded_file and (st.session_state.current_file_id != uploaded_file.file_id):
         st.session_state.current_file_id = uploaded_file.file_id
         
@@ -99,7 +83,6 @@ with st.sidebar:
         min_area = st.slider("Minimum Pill Area (pixels)", 100, 5000, 500)
         max_area = st.slider("Maximum Pill Area (pixels)", 500, 20000, 10000)
 
-# --- Main app logic ---
 if st.session_state.display_image is not None:
     display_image = st.session_state.display_image
     
