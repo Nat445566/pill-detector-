@@ -10,6 +10,7 @@ import pandas as pd
 def get_pill_properties(image_bgr, contour):
     """
     Analyzes a single pill contour to determine its shape and color.
+    This version has reverted and refined shape/color logic.
     """
     # --- Shape Analysis ---
     area = cv2.contourArea(contour)
@@ -21,9 +22,10 @@ def get_pill_properties(image_bgr, contour):
         _, (w, h), _ = cv2.minAreaRect(contour)
         aspect_ratio = max(w, h) / min(w, h) if min(w, h) > 0 else 0
 
-        if circularity > 0.85 and aspect_ratio < 1.3:
+        # FIX: Reverted to a more balanced and forgiving shape logic
+        if circularity > 0.82 and aspect_ratio < 1.4:
             shape = "Round"
-        elif aspect_ratio > 2.5:
+        elif aspect_ratio > 2.0: # Reverted from the too-strict 2.5
             shape = "Capsule"
         else:
             shape = "Oval"
@@ -35,32 +37,37 @@ def get_pill_properties(image_bgr, contour):
     mean_hsv = cv2.mean(image_hsv, mask=mask)[:3]
     h, s, v = mean_hsv
 
-    # Refined HSV color ranges for better accuracy
+    # FIX: Adjusted color ranges to prevent misclassification
     color = "Unknown"
     if s < 25 and v > 180: color = "White"
-    elif (h > 20 and h < 35) and s > 50: color = "Yellow"
+    # Adjusted hue boundaries to better separate Yellow and Brown/Orange
+    elif (h > 22 and h < 35) and s > 50: color = "Yellow"
+    elif (h >= 8 and h <= 22) and s > 60: color = "Brown/Orange"
     elif (h >= 100 and h <= 130) and s > 60: color = "Blue"
     elif (h >= 35 and h <= 85) and s > 50: color = "Green"
-    elif (h >= 8 and h <= 20) and s > 70: color = "Brown/Orange"
 
     return shape, color
 
 def detect_pills_pipeline(image, params):
     """
-    Main pill detection pipeline using robust ADAPTIVE thresholding.
+    Main pill detection pipeline using adaptive thresholding AND morphological closing.
     """
     annotated_image = image.copy()
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (7, 7), 0)
 
-    # THE KEY FIX: Using Adaptive Thresholding.
-    # This handles pills of different brightness levels correctly.
-    # It calculates a local threshold for each small region.
+    # 1. Use Adaptive Thresholding to handle different brightness levels
     thresh = cv2.adaptiveThreshold(blurred, 255,
                                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY_INV, 15, 3)
+                                   cv2.THRESH_BINARY_INV, 21, 5)
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 2. THE KEY FIX: Use Morphological Closing to fill holes in the pills
+    # This creates solid shapes and is crucial for reliable detection.
+    kernel = np.ones((5, 5), np.uint8)
+    closing = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    # 3. Find contours on the cleaned-up image
+    contours, _ = cv2.findContours(closing, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     detected_pills = []
     for c in contours:
@@ -68,6 +75,7 @@ def detect_pills_pipeline(image, params):
         if not (params['min_area'] < area < params['max_area']):
             continue
 
+        # Solidity filter is still useful to remove any remaining noise
         hull = cv2.convexHull(c)
         solidity = float(area) / cv2.contourArea(hull)
         if solidity < 0.9:
@@ -114,24 +122,23 @@ with st.sidebar:
 
     with st.expander("Manual Tuning & Advanced Options"):
         st.write("Adjust these if the automatic detection is not perfect.")
-        # We can estimate parameters using a simple Canny edge for speed,
-        # but the main pipeline will use the more robust adaptive method.
+        # Auto-parameter estimation
         if st.session_state.img is not None:
             gray_for_params = cv2.cvtColor(st.session_state.img, cv2.COLOR_BGR2GRAY)
             blurred_for_params = cv2.GaussianBlur(gray_for_params, (7, 7), 0)
-            edges_for_params = cv2.Canny(blurred_for_params, 50, 150)
-            contours_for_params, _ = cv2.findContours(edges_for_params, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            areas = [cv2.contourArea(c) for c in contours_for_params if cv2.contourArea(c) > 100]
+            thresh_for_params = cv2.adaptiveThreshold(blurred_for_params, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 21, 5)
+            contours_for_params, _ = cv2.findContours(thresh_for_params, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            areas = [cv2.contourArea(c) for c in contours_for_params if cv2.contourArea(c) > 50]
             if areas:
                 median_area = np.median(areas)
-                min_area_est = int(max(100, median_area * 0.2))
+                min_area_est = int(max(50, median_area * 0.2))
                 max_area_est = int(min(100000, median_area * 5.0))
             else:
-                min_area_est, max_area_est = 500, 40000
+                min_area_est, max_area_est = 200, 40000
         else:
-            min_area_est, max_area_est = 500, 40000
+            min_area_est, max_area_est = 200, 40000
 
-        min_area = st.slider("Min Area", 100, 5000, min_area_est)
+        min_area = st.slider("Min Area", 50, 5000, min_area_est)
         max_area = st.slider("Max Area", 5000, 100000, max_area_est)
 
         params = {
