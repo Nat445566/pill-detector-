@@ -2,143 +2,157 @@ import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image
-from streamlit_drawable_canvas import st_canvas
 
-# --------------------------------------------------------------------------------
-# Page Configuration
-# --------------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Smart Pill Counter (OpenCV)",
-    page_icon="💊",
-    layout="wide"
-)
+# --- Core Image Processing Functions ---
 
-# --------------------------------------------------------------------------------
-# Image Processing Pipeline (Based on BMDS2133 Handbook)
-# --------------------------------------------------------------------------------
-def get_pill_contours(image_cv, show_steps=False):
+def get_pill_properties(image_bgr, contour):
     """
-    Takes an OpenCV image and returns the contours of the pills using a
-    pipeline based on the practical handbook.
+    Analyzes a single, confirmed pill contour to determine its shape and color.
     """
-    gray_image = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
-    blurred_image = cv2.GaussianBlur(gray_image, (7, 7), 0)
-    binary_mask = cv2.adaptiveThreshold(
-        blurred_image, 255, 
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY_INV, 
-        blockSize=15, C=4 
-    )
-    kernel = np.ones((3, 3), np.uint8)
-    cleaned_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel, iterations=3)
-    cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel, iterations=3)
-    contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 1. Shape Analysis using a robust circularity calculation
+    perimeter = cv2.arcLength(contour, True)
+    area = cv2.contourArea(contour)
+    shape = "Unknown"
+    if perimeter > 0:
+        # A perfect circle has a circularity of 1.0
+        circularity = 4 * np.pi * (area / (perimeter * perimeter))
+        if circularity > 0.85:
+            shape = "Round"
+        elif circularity > 0.60:
+            shape = "Oval"
+        else:
+            shape = "Capsule" # Long, thin shapes have low circularity
+
+    # 2. Color Analysis using the average color inside the contour
+    mask = np.zeros(image_bgr.shape[:2], dtype="uint8")
+    cv2.drawContours(mask, [contour], -1, 255, -1)
     
-    if show_steps:
-        with st.expander("Show Processing Steps"):
-            col1, col2, col3 = st.columns(3)
-            col1.image(gray_image, caption="1. Grayscale", use_column_width=True)
-            col2.image(binary_mask, caption="2. After Adaptive Thresholding", use_column_width=True)
-            col3.image(cleaned_mask, caption="3. Cleaned Mask", use_column_width=True)
+    # Convert to HSV for robust color detection
+    image_hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+    mean_hsv = cv2.mean(image_hsv, mask=mask)[:3]
+    h, s, v = mean_hsv
+    
+    color = "Unknown"
+    # Tuned HSV ranges for better accuracy in various lighting
+    if s < 65 and v > 160: color = "White"
+    elif 35 < h < 85 and s > 60: color = "Green"
+    elif (h < 12 or h > 168) and s > 80: color = "Red"
+    elif 10 < h < 35 and s > 80: color = "Brown/Orange"
+    elif 85 < h < 130 and s > 70: color = "Blue"
+    
+    return shape, color
+
+def detect_pills(image, min_area, max_area, circularity_threshold, solidity_threshold):
+    """
+    The main pill detection pipeline. Finds, filters, and analyzes contours
+    to identify objects that are exclusively pills.
+    """
+    # Create a copy to draw annotations on
+    annotated_image = image.copy()
+    
+    # --- 1. Preprocessing ---
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Median Blur is excellent for removing "salt-and-pepper" noise while keeping object edges sharp
+    blurred = cv2.medianBlur(gray, 5)
+
+    # --- 2. Segmentation using Canny Edge Detection ---
+    # This is much more robust for complex backgrounds than simple thresholding
+    edges = cv2.Canny(blurred, 50, 150)
+    
+    # --- 3. Find All Potential Objects (Contours) ---
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    pills_found_contours = []
+    
+    # --- 4. The Critical "Pill-ness" Filter Pipeline ---
+    # Each contour is tested. Only those passing all tests are considered pills.
+    for c in contours:
+        # a) Filter by Area: Is the object the right size?
+        area = cv2.contourArea(c)
+        if not (min_area < area < max_area):
+            continue
             
-    return contours
+        # b) Filter by Circularity: Is the object round or oval? 
+        # (This is the MOST IMPORTANT filter for ignoring background patterns)
+        perimeter = cv2.arcLength(c, True)
+        if perimeter == 0: continue
+        circularity = 4 * np.pi * (area / (perimeter * perimeter))
+        if circularity < circularity_threshold:
+            continue
+            
+        # c) Filter by Solidity: Is the object a solid shape (not hollow)?
+        hull = cv2.convexHull(c)
+        hull_area = cv2.contourArea(hull)
+        if hull_area == 0: continue
+        solidity = float(area) / hull_area
+        if solidity < solidity_threshold:
+            continue
+        
+        # If a contour passes all checks, it's a pill!
+        pills_found_contours.append(c)
 
-# --------------------------------------------------------------------------------
-# Streamlit UI and State Management
-# --------------------------------------------------------------------------------
-st.title("💊 Smart Pill Counting System (OpenCV Edition)")
-st.markdown("Built using the **BMDS2133 Image Processing Handbook**. This tool allows you to count pills from an image using two different methods.")
+    # --- 5. Analyze and Annotate the Confirmed Pills ---
+    for pill_contour in pills_found_contours:
+        shape, color = get_pill_properties(image, pill_contour)
+        
+        # Draw bounding box and the final classification label
+        x, y, w, h = cv2.boundingRect(pill_contour)
+        cv2.rectangle(annotated_image, (x, y), (x + w, y + h), (0, 255, 0), 3)
+        label_text = f"{shape}, {color}"
+        cv2.putText(annotated_image, label_text, (x, y - 10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-if 'display_image' not in st.session_state:
-    st.session_state.display_image = None
-if 'current_file_id' not in st.session_state:
-    st.session_state.current_file_id = None
+    return annotated_image, len(pills_found_contours)
 
-with st.sidebar:
-    st.header("⚙️ Settings")
-    uploaded_file = st.file_uploader("1. Upload your image", type=["jpg", "jpeg", "png"])
+
+# --- Streamlit Web App Interface ---
+
+st.set_page_config(layout="wide")
+st.title("Accurate Pill Detector and Identifier")
+
+st.write("""
+Upload an image containing pills. This application uses a multi-stage filtering pipeline to detect **only pill-like objects** and ignore complex backgrounds. 
+Use the sliders in the sidebar to **fine-tune the detection sensitivity** for your specific image.
+""")
+
+# --- Sidebar for User-Adjustable Parameters ---
+st.sidebar.title("Detection Controls")
+min_area = st.sidebar.slider("1. Minimum Pill Area", 100, 5000, 500, help="Filters out small noise. Increase if small pills are missed.")
+max_area = st.sidebar.slider("2. Maximum Pill Area", 5000, 100000, 40000, help="Filters out objects that are too large.")
+circularity_threshold = st.sidebar.slider("3. Circularity Threshold", 0.1, 1.0, 0.65, 0.01, help="The most important filter. Higher values mean 'more round'. Lower this to detect very long capsules.")
+solidity_threshold = st.sidebar.slider("4. Solidity Threshold", 0.1, 1.0, 0.85, 0.01, help="Filters out objects with concave shapes or holes. Pills should be very solid (close to 1.0).")
+
+# --- Main Page for Upload and Display ---
+uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None:
+    # Convert the uploaded file to an OpenCV image
+    pil_image = Image.open(uploaded_file).convert('RGB')
+    original_image = np.array(pil_image)
+    # Convert RGB (from PIL) to BGR (for OpenCV)
+    original_image = cv2.cvtColor(original_image, cv2.COLOR_RGB2BGR)
+
+    # Resize for consistent processing and display
+    processing_image = cv2.resize(original_image, (800, int(800 * original_image.shape[0] / original_image.shape[1])))
     
-    if uploaded_file and (st.session_state.current_file_id != uploaded_file.file_id):
-        st.session_state.current_file_id = uploaded_file.file_id
-        
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        opencv_image = cv2.imdecode(file_bytes, 1)
-        rgb_image = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(rgb_image)
-
-        if pil_image.width > 700:
-            ratio = 700 / pil_image.width
-            new_height = int(pil_image.height * ratio)
-            pil_image = pil_image.resize((700, new_height), Image.Resampling.LANCZOS)
-        
-        st.session_state.display_image = pil_image
-
-    analysis_mode = st.radio(
-        "2. Choose Analysis Mode",
-        ('Count in a Selected Area (ROI)', 'Count All Pills (Full Image)')
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.image(processing_image, channels="BGR", caption="Uploaded Image")
+    
+    # Perform detection
+    annotated_image, pill_count = detect_pills(
+        processing_image, 
+        min_area, 
+        max_area, 
+        circularity_threshold,
+        solidity_threshold
     )
-
-    if analysis_mode == 'Count All Pills (Full Image)':
-        st.subheader("Full Analysis Settings")
-        min_area = st.slider("Minimum Pill Area (pixels)", 100, 5000, 500)
-        max_area = st.slider("Maximum Pill Area (pixels)", 500, 20000, 10000)
-
-if st.session_state.display_image is not None:
-    display_image = st.session_state.display_image
     
-    if analysis_mode == 'Count in a Selected Area (ROI)':
-        st.subheader("Step 1: Draw a box to define the counting area")
-        
-        canvas_result = st_canvas(
-            fill_color="rgba(255, 165, 0, 0.3)",
-            stroke_width=3,
-            background_image=display_image,
-            height=display_image.height,
-            width=display_image.width,
-            drawing_mode="rect",
-            key="canvas_roi"
-        )
-
-        if canvas_result.json_data is not None and len(canvas_result.json_data["objects"]) > 0:
-            st.subheader("Step 2: Process the selected area")
-            if st.button("Count Pills in Selected Area"):
-                with st.spinner("Analyzing..."):
-                    rect = canvas_result.json_data["objects"][0]
-                    x, y, w, h = int(rect["left"]), int(rect["top"]), int(rect["width"]), int(rect["height"])
-                    
-                    if w > 0 and h > 0:
-                        full_image_cv = cv2.cvtColor(np.array(display_image), cv2.COLOR_RGB2BGR)
-                        cropped_image = full_image_cv[y:y+h, x:x+w]
-                        contours_in_crop = get_pill_contours(cropped_image, show_steps=True)
-                        pill_count = len(contours_in_crop)
-                        
-                        output_image = np.array(display_image).copy()
-                        cv2.drawContours(output_image, contours_in_crop, -1, (0, 255, 0), 2, offset=(x, y))
-                        
-                        st.subheader("Results")
-                        st.image(output_image, caption=f"Found {pill_count} pills inside the selected area.")
-                        st.success(f"**Total Pills Counted: {pill_count}**")
-
-    elif analysis_mode == 'Count All Pills (Full Image)':
-        st.subheader("Step 1: Review Full Image")
-        st.image(display_image, caption="Uploaded Image")
-        st.markdown(f"The app will count pills with an area between **{min_area}** and **{max_area}** pixels.")
-        
-        if st.button("Count All Pills"):
-            with st.spinner("Analyzing..."):
-                image_to_process = cv2.cvtColor(np.array(display_image), cv2.COLOR_RGB2BGR)
-                contours = get_pill_contours(image_to_process, show_steps=True)
-                
-                pill_count = 0
-                output_image = np.array(display_image).copy()
-                
-                for cnt in contours:
-                    if min_area < cv2.contourArea(cnt) < max_area:
-                        pill_count += 1
-                        cv2.drawContours(output_image, [cnt], -1, (0, 255, 0), 2)
-                
-                st.subheader("Results")
-                st.image(output_image, caption=f"Found {pill_count} pills within the specified size range.")
-                st.success(f"**Total Pills Counted: {pill_count}**")
-else:
-    st.info("Please upload an image to get started.")
+    with col2:
+        st.image(annotated_image, channels="BGR", caption=f"Detection Result: {pill_count} pill(s) found")
+    
+    if pill_count > 0:
+        st.success(f"Successfully detected {pill_count} pill(s)!")
+    else:
+        st.warning("No objects matching the filter criteria were found. Please try adjusting the sliders in the sidebar.")
