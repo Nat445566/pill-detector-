@@ -4,181 +4,137 @@ import numpy as np
 from PIL import Image
 from streamlit_cropper import st_cropper
 
-# --- Core Image Processing & Analysis Functions ---
+# --- Core Feature Extraction and Analysis Functions ---
 
-def auto_estimate_parameters(image):
+def get_template_features(roi_image):
     """
-    Analyzes the image to automatically guess the best min/max area for pills,
-    making the app work automatically for the user.
+    Analyzes the user-selected ROI to extract the key features of the template pill.
+    Returns a dictionary of features or None if no clear object is found.
     """
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
-    edges = cv2.Canny(blurred, 50, 150)
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    areas = [cv2.contourArea(c) for c in contours if 100 < cv2.contourArea(c) < 100000]
-    
-    if not areas:
-        # Provide sensible defaults if no objects are found in the pre-scan
-        return {'min_area': 500, 'max_area': 40000}
-        
-    median_area = np.median(areas)
-    min_area_est = int(max(100, median_area * 0.2))
-    max_area_est = int(min(100000, median_area * 5.0))
-    
-    return {'min_area': min_area_est, 'max_area': max_area_est}
-
-def get_pill_properties(image_bgr, contour):
-    """
-    Analyzes a single pill contour to determine its shape and color.
-    This version includes robust capsule detection.
-    """
-    # --- Shape Analysis ---
-    area = cv2.contourArea(contour)
-    perimeter = cv2.arcLength(contour, True)
-    shape = "Unknown"
-    
-    if perimeter > 0:
-        circularity = 4 * np.pi * (area / (perimeter * perimeter))
-        # Get the tightest-fitting rotated rectangle
-        _, (w, h), _ = cv2.minAreaRect(contour)
-        aspect_ratio = max(w, h) / min(w, h) if min(w,h) > 0 else 0
-        
-        if circularity > 0.82 and aspect_ratio < 1.2:
-            shape = "Round"
-        elif aspect_ratio > 1.8: # Capsules are significantly longer than they are wide
-            shape = "Capsule"
-        else:
-            shape = "Oval"
-
-    # --- Color Analysis ---
-    mask = np.zeros(image_bgr.shape[:2], dtype="uint8")
-    cv2.drawContours(mask, [contour], -1, 255, -1)
-    image_hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
-    mean_hsv = cv2.mean(image_hsv, mask=mask)[:3]
-    h, s, v = mean_hsv
-    
-    color = "Unknown"
-    if s < 65 and v > 150: color = "White"
-    elif 35 < h < 85 and s > 60: color = "Green"
-    elif (h < 12 or h > 168) and s > 80: color = "Red"
-    elif 10 < h < 35 and s > 80: color = "Brown/Orange"
-    elif 85 < h < 130 and s > 70: color = "Blue"
-    
-    return shape, color
-
-def detect_pills_pipeline(image, params):
-    """The main pill detection pipeline using the provided parameters."""
-    annotated_image = image.copy()
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Pre-process the small ROI image
+    gray = cv2.cvtColor(roi_image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.medianBlur(gray, 5)
-    edges = cv2.Canny(blurred, 50, 150)
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
     
-    pills_found = []
-    for c in contours:
-        area = cv2.contourArea(c)
-        if not (params['min_area'] < area < params['max_area']):
-            continue
-            
-        perimeter = cv2.arcLength(c, True)
-        if perimeter == 0: continue
-        circularity = 4 * np.pi * (area / (perimeter * perimeter))
-        if circularity < params['circularity']:
-            continue
-            
-        hull = cv2.convexHull(c)
-        if cv2.contourArea(hull) == 0: continue
-        solidity = float(area) / cv2.contourArea(hull)
-        if solidity < params['solidity']:
-            continue
+    # Find the largest contour in the ROI, assuming it's the pill
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
         
-        pills_found.append(c)
+    template_contour = max(contours, key=cv2.contourArea)
+    
+    # --- Feature Extraction ---
+    # 1. Color Feature (in robust HSV space)
+    hsv_roi = cv2.cvtColor(roi_image, cv2.COLOR_BGR2HSV)
+    mask = np.zeros(hsv_roi.shape[:2], dtype="uint8")
+    cv2.drawContours(mask, [template_contour], -1, 255, -1)
+    mean_hsv = cv2.mean(hsv_roi, mask=mask)[:3]
 
-    for pill_contour in pills_found:
-        shape, color = get_pill_properties(image, pill_contour)
-        x, y, w, h = cv2.boundingRect(pill_contour)
-        cv2.rectangle(annotated_image, (x, y), (x + w, y + h), (0, 255, 0), 3)
-        label_text = f"{shape}, {color}"
-        cv2.putText(annotated_image, label_text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+    # 2. Shape Feature (Circularity)
+    area = cv2.contourArea(template_contour)
+    perimeter = cv2.arcLength(template_contour, True)
+    circularity = 4 * np.pi * (area / (perimeter**2)) if perimeter > 0 else 0
 
-    return annotated_image, len(pills_found)
+    # 3. Size Feature (Area)
+    return {
+        "hsv_color": np.array(mean_hsv),
+        "circularity": circularity,
+        "area": area
+    }
+
+def find_candidate_pills(full_image):
+    """
+    Scans the entire image to find all potential objects (candidates) that could be pills.
+    """
+    gray = cv2.cvtColor(full_image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.medianBlur(gray, 5)
+    
+    # Use Canny edge detection followed by morphology to find distinct objects
+    edges = cv2.Canny(blurred, 50, 150)
+    kernel = np.ones((3, 3), np.uint8)
+    dilated_edges = cv2.dilate(edges, kernel, iterations=1)
+    
+    contours, _ = cv2.findContours(dilated_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return contours
 
 # --- Streamlit Web App Interface ---
 
 st.set_page_config(layout="wide")
-st.title("Intelligent Pill Detector and Identifier")
-st.write("Upload an image, and the system will automatically detect the pills.")
+st.title("Pill Detection by Example")
+st.write("Instructions: **1.** Upload an image. **2.** Draw a box around **one** example pill. **3.** Click the button to find and count all similar pills.")
 
-# Initialize session state
-if 'img' not in st.session_state:
-    st.session_state.img = None
+# --- Sidebar for Tolerance Controls ---
+st.sidebar.title("Matching Sensitivity")
+st.sidebar.write("Control how strict the matching is. Lower values are more strict.")
+color_tolerance = st.sidebar.slider("Color Similarity Tolerance", 1, 100, 35)
+shape_tolerance = st.sidebar.slider("Shape Similarity Tolerance", 0.01, 1.0, 0.25, 0.01)
+size_tolerance = st.sidebar.slider("Size Similarity Tolerance (%)", 1, 100, 40)
 
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
-
-if uploaded_file is not None:
-    pil_image = Image.open(uploaded_file).convert('RGB')
-    original_image = np.array(pil_image)
-    original_image = cv2.cvtColor(original_image, cv2.COLOR_RGB2BGR)
-    st.session_state.img = cv2.resize(original_image, (800, int(800 * original_image.shape[0] / original_image.shape[1])))
-
-# --- Main display area ---
+# --- Main App Logic ---
 col1, col2 = st.columns(2)
+
 with col1:
-    if st.session_state.img is not None:
-        st.subheader("Original Image")
-        st.image(st.session_state.img, channels="BGR")
-    else:
-        st.info("Awaiting image upload.")
+    st.subheader("1. Select a Template Pill")
+    uploaded_file = st.file_uploader("Upload an image...", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
 
-# --- Sidebar with hidden advanced controls ---
-with st.sidebar:
-    st.title("Controls")
-    mode = st.radio("Select Mode", ("Automatic Detection", "Manual ROI"))
-
-    with st.expander("Manual Tuning & Advanced Options"):
-        st.write("Only adjust these if the automatic detection is not perfect.")
-        # Estimate parameters if an image is loaded, otherwise use defaults
-        if st.session_state.img is not None:
-            auto_params = auto_estimate_parameters(st.session_state.img)
-        else:
-            auto_params = {'min_area': 500, 'max_area': 40000}
-            
-        min_area = st.slider("Min Area", 100, 5000, auto_params['min_area'])
-        max_area = st.slider("Max Area", 5000, 100000, auto_params['max_area'])
-        # A lower circularity threshold is needed to allow capsules to pass the filter
-        circularity = st.slider("Circularity", 0.1, 1.0, 0.5, 0.01)
-        solidity = st.slider("Solidity", 0.1, 1.0, 0.85, 0.01)
-
-        params = {
-            'min_area': min_area,
-            'max_area': max_area,
-            'circularity': circularity,
-            'solidity': solidity
-        }
-
-# --- Detection Logic ---
-with col2:
-    st.subheader("Detection Result")
-    if st.session_state.img is not None:
-        if mode == "Automatic Detection":
-            # Auto-tune and run immediately
-            auto_params_live = auto_estimate_parameters(st.session_state.img)
-            # Use sensible defaults for shape, which are harder to auto-tune
-            auto_params_live['circularity'] = 0.50 
-            auto_params_live['solidity'] = 0.85
-            
-            annotated_image, pill_count = detect_pills_pipeline(st.session_state.img, auto_params_live)
-            st.image(annotated_image, channels="BGR", caption=f"Automatically found {pill_count} pill(s)")
-            st.success(f"Automatic detection complete. Found {pill_count} pill(s).")
+    if uploaded_file:
+        pil_image = Image.open(uploaded_file)
+        # Resize for consistent display and processing
+        pil_image.thumbnail((800, 800)) 
         
-        elif mode == "Manual ROI":
-            st.warning("Draw a box on the original image and click 'Detect in ROI'.")
-            cropped_img_pil = st_cropper(Image.fromarray(cv2.cvtColor(st.session_state.img, cv2.COLOR_BGR2RGB)), realtime_update=True, box_color='lime')
+        # The cropper tool for user to select the ROI
+        cropped_img = st_cropper(pil_image, realtime_update=True, box_color='lime', aspect_ratio=None, key='cropper')
+
+        if st.button("Find and Count Similar Pills", type="primary"):
+            # Convert the full image to OpenCV format
+            full_image_cv = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
             
-            if st.button("Detect Pills in Selected ROI"):
-                cropped_img_cv = cv2.cvtColor(np.array(cropped_img_pil), cv2.COLOR_RGB2BGR)
-                # Use the manually tuned parameters for the ROI detection
-                annotated_roi, pill_count = detect_pills_pipeline(cropped_img_cv, params)
-                st.image(annotated_roi, channels="BGR", caption=f"Found {pill_count} pill(s) in ROI")
-                st.success(f"Manual ROI detection complete. Found {pill_count} pill(s).")
+            # Convert the user's crop to OpenCV format
+            roi_image_cv = cv2.cvtColor(np.array(cropped_img), cv2.COLOR_RGB2BGR)
+
+            with st.spinner("Analyzing template pill..."):
+                template_features = get_template_features(roi_image_cv)
+
+            if template_features is None:
+                st.error("Could not identify a clear pill in the selected region. Please draw a tighter box.")
+            else:
+                with st.spinner("Scanning image and matching pills..."):
+                    candidate_contours = find_candidate_pills(full_image_cv)
+                    
+                    matching_pills = []
+                    annotated_image = full_image_cv.copy()
+
+                    for candidate in candidate_contours:
+                        # Get features of the candidate pill
+                        candidate_features = get_template_features(full_image_cv.copy())
+                        if candidate_features is not None:
+                             # Extract features for the current candidate contour
+                            candidate_hsv_roi = cv2.cvtColor(full_image_cv, cv2.COLOR_BGR2HSV)
+                            candidate_mask = np.zeros(candidate_hsv_roi.shape[:2], dtype="uint8")
+                            cv2.drawContours(candidate_mask, [candidate], -1, 255, -1)
+                            candidate_mean_hsv = cv2.mean(candidate_hsv_roi, mask=candidate_mask)[:3]
+                            candidate_hsv_color = np.array(candidate_mean_hsv)
+                            candidate_area = cv2.contourArea(candidate)
+                            candidate_perimeter = cv2.arcLength(candidate, True)
+                            candidate_circularity = 4 * np.pi * (candidate_area / (candidate_perimeter**2)) if candidate_perimeter > 0 else 0
+
+                            # Compare features with tolerances
+                            color_diff = cv2.norm(template_features["hsv_color"], candidate_hsv_color, cv2.NORM_L2)
+                            shape_diff = abs(template_features["circularity"] - candidate_circularity)
+                            size_diff = abs(1 - candidate_area / template_features["area"]) if template_features["area"] > 0 else 1
+
+                            # Check if all features are within tolerance
+                            if (color_diff < color_tolerance and 
+                                shape_diff < shape_tolerance and 
+                                size_diff < (size_tolerance / 100.0)):
+                                matching_pills.append(candidate)
+                    
+                    # Draw results on the image
+                    for pill_contour in matching_pills:
+                        x, y, w, h = cv2.boundingRect(pill_contour)
+                        cv2.rectangle(annotated_image, (x, y), (x + w, y + h), (0, 255, 0), 3)
+
+                    with col2:
+                        st.subheader("2. Detection Result")
+                        st.image(annotated_image, channels="BGR", caption=f"Found {len(matching_pills)} matching pill(s).")
+                        st.success(f"Found {len(matching_pills)} pills similar to your selection.")
