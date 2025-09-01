@@ -60,20 +60,15 @@ def detect_pills_pipeline(image, params):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
     # 1. ROBUST BACKGROUND SUBTRACTION
-    # Estimate background with a large median blur to erase pills
     background = cv2.medianBlur(gray, 51)
-    # Subtract background to isolate pills
     foreground = cv2.subtract(background, gray)
 
     # 2. AUTOMATIC THRESHOLDING
-    # Use Otsu's method to automatically find the best threshold value. This is the critical fix.
     _, thresh = cv2.threshold(foreground, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     # 3. CLEAN THE MASK
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    # Remove noise
     opened_mask = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
-    # Fill holes
     closed_mask = cv2.morphologyEx(opened_mask, cv2.MORPH_CLOSE, kernel, iterations=3)
 
     # 4. FIND AND FILTER CONTOURS
@@ -84,19 +79,16 @@ def detect_pills_pipeline(image, params):
         area = cv2.contourArea(c)
         perimeter = cv2.arcLength(c, True)
 
-        # First filter by area
         if not (params['min_area'] < area < params['max_area']):
             continue
 
-        # Second filter by circularity to reject non-pill shapes
         if perimeter > 0:
             circularity = 4 * np.pi * (area / (perimeter * perimeter))
-            if circularity < 0.6: # Reject irregular shapes
+            if circularity < 0.6:
                 continue
         else:
             continue
 
-        # 5. CLASSIFY the cleanly detected pills
         shape, color = get_pill_properties(image, c)
         if color == "Unknown" or shape == "Unknown":
             continue
@@ -112,7 +104,7 @@ def detect_pills_pipeline(image, params):
 
     return annotated_image, len(detected_pills), detected_pills
 
-# --- Streamlit Web App Interface (No changes needed below this line) ---
+# --- Streamlit Web App Interface ---
 
 st.set_page_config(layout="wide")
 st.title("Intelligent Pill Detector and Identifier")
