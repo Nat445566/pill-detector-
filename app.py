@@ -11,7 +11,7 @@ def get_pill_properties(image_bgr, contour):
     """
     A definitive, hierarchical classifier for shape and color.
     """
-    # --- Shape Analysis (No changes needed) ---
+    # --- Shape Analysis ---
     area = cv2.contourArea(contour)
     perimeter = cv2.arcLength(contour, True)
     shape = "Unknown"
@@ -36,21 +36,20 @@ def get_pill_properties(image_bgr, contour):
     mean_hsv = cv2.mean(image_hsv, mask=eroded_mask)[:3]
     h, s, v = mean_hsv
 
-    # 1. First, classify achromatic colors (White, Gray, Black). This is most reliable.
-    if s < 40: # Low saturation means it's not a vibrant color
+    # 1. First, classify achromatic colors (White, Gray, Black).
+    if s < 40:
         if v > 150: color = "White"
         elif v < 70: color = "Black"
         else: color = "Gray"
     # 2. If it's a chromatic color, then check the Hue.
     else:
-        # Meticulously re-tuned Hue ranges for consistency
         if (h >= 0 and h <= 10) or (h >= 170 and h <= 180): color = "Red"
         elif h > 10 and h <= 18: color = "Brown"
         elif h > 18 and h <= 25: color = "Orange"
         elif h > 25 and h <= 35: color = "Yellow"
         elif h > 35 and h <= 85: color = "Green"
         elif h > 85 and h <= 130: color = "Blue"
-        elif h > 130 and h < 170: color = "Pink" # Pink is a less saturated red/purple
+        elif h > 130 and h < 170: color = "Pink"
         else: color = "Unknown"
 
     return shape, color
@@ -85,7 +84,6 @@ def detect_on_light_bg(image, params):
     """Pipeline for light/complex backgrounds using a full color palette."""
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     
-    # Updated ranges to match the new classifier
     color_ranges = {
         'Red1': [np.array([0, 70, 50]), np.array([10, 255, 255])],
         'Red2': [np.array([170, 70, 50]), np.array([180, 255, 255])],
@@ -179,9 +177,10 @@ with st.sidebar:
         min_area = st.slider("Min Area", 50, 5000, 100)
         max_area = st.slider("Max Area", 5000, 100000, 50000)
 
+        # THIS IS THE CORRECTED LINE
         params = {
             'min_area': min_area,
-            'max_area': max_.area
+            'max_area': max_area
         }
 
 # --- Main display area ---
