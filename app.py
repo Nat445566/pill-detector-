@@ -7,30 +7,12 @@ import pandas as pd
 
 # --- Core Image Processing & Analysis Functions ---
 
-def auto_estimate_parameters(image):
-    """
-    Analyzes the image to automatically guess the best min/max area for pills.
-    """
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
-    edges = cv2.Canny(blurred, 50, 150)
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    areas = [cv2.contourArea(c) for c in contours if 100 < cv2.contourArea(c) < 100000]
-
-    if not areas:
-        return {'min_area': 500, 'max_area': 40000}
-
-    median_area = np.median(areas)
-    min_area_est = int(max(100, median_area * 0.2))
-    max_area_est = int(min(100000, median_area * 5.0))
-
-    return {'min_area': min_area_est, 'max_area': max_area_est}
-
 def get_pill_properties(image_bgr, contour):
     """
     Analyzes a single pill contour to determine its shape and color.
+    This version has heavily refined shape and color logic.
     """
+    # --- Shape Analysis ---
     area = cv2.contourArea(contour)
     perimeter = cv2.arcLength(contour, True)
     shape = "Unknown"
@@ -40,37 +22,48 @@ def get_pill_properties(image_bgr, contour):
         _, (w, h), _ = cv2.minAreaRect(contour)
         aspect_ratio = max(w, h) / min(w, h) if min(w, h) > 0 else 0
 
+        # FIX 3: Stricter shape definitions. Capsule must be very long.
         if circularity > 0.85 and aspect_ratio < 1.3:
             shape = "Round"
-        elif aspect_ratio > 1.8:
+        elif aspect_ratio > 2.5: # Much stricter for capsules
             shape = "Capsule"
         else:
-            shape = "Oval"
+            shape = "Oval" # More shapes will correctly be classified as Oval now
 
+    # --- Color Analysis ---
     mask = np.zeros(image_bgr.shape[:2], dtype="uint8")
     cv2.drawContours(mask, [contour], -1, 255, -1)
     image_hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     mean_hsv = cv2.mean(image_hsv, mask=mask)[:3]
     h, s, v = mean_hsv
 
+    # FIX 2: Refined HSV color ranges for better accuracy
     color = "Unknown"
-    if s < 40 and v > 160: color = "White"
-    elif (h >= 100 and h <= 130) and s > 70: color = "Blue"
-    elif (h >= 35 and h <= 85) and s > 60: color = "Green"
-    elif (h >= 8 and h <= 20) and s > 80: color = "Brown/Orange"
-    elif (h > 20 and h < 35) and s > 80: color = "Yellow"
+    # Stricter 'White' definition: very low saturation, very high brightness
+    if s < 25 and v > 180: color = "White"
+    # Broader 'Yellow' definition to catch paler yellows
+    elif (h > 20 and h < 35) and s > 50: color = "Yellow"
+    elif (h >= 100 and h <= 130) and s > 60: color = "Blue"
+    elif (h >= 35 and h <= 85) and s > 50: color = "Green"
+    elif (h >= 8 and h <= 20) and s > 70: color = "Brown/Orange"
+
 
     return shape, color
 
 def detect_pills_pipeline(image, params):
     """
-    Main pill detection pipeline with a solidity filter to reject background noise.
+    Main pill detection pipeline using a robust thresholding method.
     """
     annotated_image = image.copy()
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.medianBlur(gray, 7)
-    edges = cv2.Canny(blurred, 30, 150) # Adjusted Canny thresholds slightly
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+
+    # FIX 1: Replaced Canny with Otsu's Thresholding for consistent detection
+    # This automatically finds the best threshold to separate pills from the background.
+    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Find contours on the thresholded image
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     detected_pills = []
     for c in contours:
@@ -78,15 +71,9 @@ def detect_pills_pipeline(image, params):
         if not (params['min_area'] < area < params['max_area']):
             continue
 
-        # --- KEY FIX: ADDING THE SOLIDITY FILTER ---
-        # This filter rejects non-convex shapes like the background stripes.
+        # Solidity filter is still important to remove non-pill-like noise
         hull = cv2.convexHull(c)
-        hull_area = cv2.contourArea(hull)
-        if hull_area == 0:
-            continue # Avoid division by zero
-        
-        solidity = float(area) / hull_area
-        # Pills should be very solid. A threshold of 0.9 is a good starting point.
+        solidity = float(area) / cv2.contourArea(hull)
         if solidity < 0.9:
             continue
 
@@ -119,30 +106,44 @@ if uploaded_file is not None:
     pil_image = Image.open(uploaded_file).convert('RGB')
     original_image = np.array(pil_image)
     h, w, _ = original_image.shape
-    scale = 800 / w
+    # Standardize on a slightly smaller size for faster processing
+    scale = 600 / w
     new_h, new_w = int(h * scale), int(w * scale)
     resized_image = cv2.resize(original_image, (new_w, new_h))
     st.session_state.img = cv2.cvtColor(resized_image, cv2.COLOR_RGB2BGR)
 
+# Sidebar and parameter estimation (can remain the same)
 with st.sidebar:
     st.title("Controls")
     mode = st.radio("Select Mode", ("Automatic Detection", "Manual ROI Matching"))
 
     with st.expander("Manual Tuning & Advanced Options"):
         st.write("Adjust these if the automatic detection is not perfect.")
+        # Auto-parameter estimation for min/max area is still useful
         if st.session_state.img is not None:
-            auto_params = auto_estimate_parameters(st.session_state.img)
+            gray_for_params = cv2.cvtColor(st.session_state.img, cv2.COLOR_BGR2GRAY)
+            blurred_for_params = cv2.GaussianBlur(gray_for_params, (7, 7), 0)
+            _, thresh_for_params = cv2.threshold(blurred_for_params, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            contours_for_params, _ = cv2.findContours(thresh_for_params, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            areas = [cv2.contourArea(c) for c in contours_for_params if cv2.contourArea(c) > 100]
+            if areas:
+                median_area = np.median(areas)
+                min_area_est = int(max(100, median_area * 0.2))
+                max_area_est = int(min(100000, median_area * 5.0))
+            else:
+                min_area_est, max_area_est = 500, 40000
         else:
-            auto_params = {'min_area': 500, 'max_area': 40000}
+            min_area_est, max_area_est = 500, 40000
 
-        min_area = st.slider("Min Area", 100, 5000, auto_params['min_area'])
-        max_area = st.slider("Max Area", 5000, 100000, auto_params['max_area'])
+        min_area = st.slider("Min Area", 100, 5000, min_area_est)
+        max_area = st.slider("Max Area", 5000, 100000, max_area_est)
 
         params = {
             'min_area': min_area,
             'max_area': max_area
         }
 
+# Main display columns
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("Original Image")
