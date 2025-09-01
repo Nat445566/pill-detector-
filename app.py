@@ -45,25 +45,25 @@ def get_pill_properties(image_bgr, contour):
     else:
         # Handle Red vs. Pink using Hue and Saturation
         if (h <= 10 or h >= 165):
-            if s > 100: # Vibrant reds are "Red"
+            if s > 120: # Vibrant reds are "Red"
                 color = "Red"
             else: # Less vibrant reds are "Pink"
                 color = "Pink"
-        # Handle Brown vs. Orange using Hue, Saturation, and Value
+        # Handle Brown vs. Orange using Hue and Brightness
         elif h > 10 and h <= 25:
-            if s < 100 and v < 200: # Darker, less saturated is "Brown"
+            if v < 180: # Darker is "Brown"
                 color = "Brown"
-            else: # Brighter, more saturated is "Orange"
+            else: # Brighter is "Orange"
                 color = "Orange"
         # Handle remaining colors with re-tuned ranges
-        elif h > 25 and h <= 35:
+        elif h > 25 and h <= 40: # Expanded Yellow range
             color = "Yellow"
-        elif h > 35 and h <= 85:
+        elif h > 40 and h <= 85:
             color = "Green"
         elif h > 85 and h <= 130:
             color = "Blue"
         else:
-            color = "Unknown" # Fallback for unclassified colors
+            color = "Unknown" # Fallback for unclassified colors like purple
 
     return shape, color
 
@@ -97,13 +97,15 @@ def detect_on_light_bg(image, params):
     """Pipeline for light/complex backgrounds using a full color palette."""
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     
+    # DEFINITIVE FIX: Added a dedicated range for pale, low-saturation pinks.
     color_ranges = {
-        'Red1': [np.array([0, 70, 50]), np.array([10, 255, 255])],
-        'Red2': [np.array([165, 70, 50]), np.array([180, 255, 255])],
-        'Pink': [np.array([131, 40, 50]), np.array([164, 255, 255])],
+        'VibrantRed1': [np.array([0, 120, 70]), np.array([10, 255, 255])],
+        'VibrantRed2': [np.array([165, 120, 70]), np.array([180, 255, 255])],
+        'PalePink1': [np.array([0, 40, 100]), np.array([10, 119, 255])],
+        'PalePink2': [np.array([165, 40, 100]), np.array([180, 119, 255])],
         'BrownOrange': [np.array([11, 50, 50]), np.array([25, 255, 255])],
-        'Yellow': [np.array([26, 40, 50]), np.array([35, 255, 255])],
-        'Green': [np.array([36, 40, 50]), np.array([85, 255, 255])],
+        'Yellow': [np.array([26, 40, 50]), np.array([40, 255, 255])],
+        'Green': [np.array([41, 40, 50]), np.array([85, 255, 255])],
         'Blue': [np.array([86, 50, 50]), np.array([130, 255, 255])],
     }
 
