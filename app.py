@@ -10,7 +10,7 @@ import pandas as pd
 def get_pill_properties(image_bgr, contour):
     """
     Analyzes a single pill contour to determine its shape and color.
-    This version has reverted and refined shape/color logic.
+    This version now includes a specific check for Rectangular shapes.
     """
     # --- Shape Analysis ---
     area = cv2.contourArea(contour)
@@ -18,56 +18,73 @@ def get_pill_properties(image_bgr, contour):
     shape = "Unknown"
 
     if perimeter > 0:
+        # --- NEW LOGIC FOR RECTANGLE DETECTION ---
+        # Approximate the contour to a polygon
+        epsilon = 0.04 * perimeter
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        num_vertices = len(approx)
+
         circularity = 4 * np.pi * (area / (perimeter * perimeter))
         _, (w, h), _ = cv2.minAreaRect(contour)
         aspect_ratio = max(w, h) / min(w, h) if min(w, h) > 0 else 0
 
-        # FIX: Reverted to a more balanced and forgiving shape logic
+        # Updated classification order
         if circularity > 0.82 and aspect_ratio < 1.4:
             shape = "Round"
-        elif aspect_ratio > 2.0: # Reverted from the too-strict 2.5
+        elif aspect_ratio > 2.0:
             shape = "Capsule"
+        # Check for 4 vertices to identify rectangles/squares
+        elif num_vertices == 4:
+            shape = "Rectangular"
         else:
+            # All other solid shapes are classified as Oval
             shape = "Oval"
 
-    # --- Color Analysis ---
+    # --- Color Analysis (no changes here) ---
     mask = np.zeros(image_bgr.shape[:2], dtype="uint8")
     cv2.drawContours(mask, [contour], -1, 255, -1)
     image_hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     mean_hsv = cv2.mean(image_hsv, mask=mask)[:3]
     h, s, v = mean_hsv
 
-    # FIX: Adjusted color ranges to prevent misclassification
     color = "Unknown"
     if s < 25 and v > 180: color = "White"
-    # Adjusted hue boundaries to better separate Yellow and Brown/Orange
-    elif (h > 22 and h < 35) and s > 50: color = "Yellow"
+    elif (h > 22 and h < 38) and s > 50: color = "Yellow"
     elif (h >= 8 and h <= 22) and s > 60: color = "Brown/Orange"
-    elif (h >= 100 and h <= 130) and s > 60: color = "Blue"
-    elif (h >= 35 and h <= 85) and s > 50: color = "Green"
+    elif (h >= 95 and h <= 130) and s > 60: color = "Blue"
+    elif (h >= 38 and h <= 85) and s > 50: color = "Green"
 
     return shape, color
 
 def detect_pills_pipeline(image, params):
     """
-    Main pill detection pipeline using adaptive thresholding AND morphological closing.
+    Robust pill detection pipeline based on color segmentation.
     """
     annotated_image = image.copy()
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
-    # 1. Use Adaptive Thresholding to handle different brightness levels
-    thresh = cv2.adaptiveThreshold(blurred, 255,
-                                   cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY_INV, 21, 5)
+    # 1. Define HSV color ranges for all pill types
+    color_ranges = {
+        'White': [np.array([0, 0, 180]), np.array([180, 25, 255])],
+        'Blue': [np.array([95, 60, 100]), np.array([130, 255, 255])],
+        'Green': [np.array([38, 50, 50]), np.array([85, 255, 255])],
+        'Yellow': [np.array([22, 50, 150]), np.array([38, 255, 255])],
+        'Brown/Orange': [np.array([8, 60, 100]), np.array([22, 255, 255])]
+    }
 
-    # 2. THE KEY FIX: Use Morphological Closing to fill holes in the pills
-    # This creates solid shapes and is crucial for reliable detection.
+    # 2. Create a combined mask for all pill colors
+    combined_mask = np.zeros(hsv.shape[:2], dtype="uint8")
+    for lower, upper in color_ranges.values():
+        mask = cv2.inRange(hsv, lower, upper)
+        combined_mask = cv2.bitwise_or(combined_mask, mask)
+
+    # 3. Clean the mask with morphological operations
     kernel = np.ones((5, 5), np.uint8)
-    closing = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+    opened_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    closed_mask = cv2.morphologyEx(opened_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-    # 3. Find contours on the cleaned-up image
-    contours, _ = cv2.findContours(closing, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 4. Find contours on the final, clean mask
+    contours, _ = cv2.findContours(closed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     detected_pills = []
     for c in contours:
@@ -75,10 +92,9 @@ def detect_pills_pipeline(image, params):
         if not (params['min_area'] < area < params['max_area']):
             continue
 
-        # Solidity filter is still useful to remove any remaining noise
         hull = cv2.convexHull(c)
         solidity = float(area) / cv2.contourArea(hull)
-        if solidity < 0.9:
+        if solidity < 0.92:
             continue
 
         shape, color = get_pill_properties(image, c)
@@ -87,6 +103,7 @@ def detect_pills_pipeline(image, params):
 
         detected_pills.append({'shape': shape, 'color': color, 'contour': c})
 
+    # Draw results on the image
     for pill in detected_pills:
         x, y, w, h = cv2.boundingRect(pill['contour'])
         cv2.rectangle(annotated_image, (x, y), (x + w, y + h), (0, 255, 0), 3)
@@ -99,7 +116,7 @@ def detect_pills_pipeline(image, params):
 
 st.set_page_config(layout="wide")
 st.title("Intelligent Pill Detector and Identifier")
-st.write("Upload an image to automatically detect pills, or use the manual ROI to find matching pills.")
+st.write("Upload an image to automatically detect pills. This version uses robust color segmentation.")
 
 if 'img' not in st.session_state:
     st.session_state.img = None
@@ -122,24 +139,8 @@ with st.sidebar:
 
     with st.expander("Manual Tuning & Advanced Options"):
         st.write("Adjust these if the automatic detection is not perfect.")
-        # Auto-parameter estimation
-        if st.session_state.img is not None:
-            gray_for_params = cv2.cvtColor(st.session_state.img, cv2.COLOR_BGR2GRAY)
-            blurred_for_params = cv2.GaussianBlur(gray_for_params, (7, 7), 0)
-            thresh_for_params = cv2.adaptiveThreshold(blurred_for_params, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 21, 5)
-            contours_for_params, _ = cv2.findContours(thresh_for_params, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            areas = [cv2.contourArea(c) for c in contours_for_params if cv2.contourArea(c) > 50]
-            if areas:
-                median_area = np.median(areas)
-                min_area_est = int(max(50, median_area * 0.2))
-                max_area_est = int(min(100000, median_area * 5.0))
-            else:
-                min_area_est, max_area_est = 200, 40000
-        else:
-            min_area_est, max_area_est = 200, 40000
-
-        min_area = st.slider("Min Area", 50, 5000, min_area_est)
-        max_area = st.slider("Max Area", 5000, 100000, max_area_est)
+        min_area = st.slider("Min Area", 50, 5000, 200)
+        max_area = st.slider("Max Area", 5000, 100000, 40000)
 
         params = {
             'min_area': min_area,
@@ -211,4 +212,4 @@ with col2:
                             'Color': [target_color],
                             'Quantity Found': [len(matches)]
                         }
-                        st.table(pd.DataFrame(match_data))
+                        st.table(pd.DataFrame(match_data))```
