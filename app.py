@@ -9,13 +9,12 @@ import pandas as pd
 
 def get_pill_properties(image_bgr, contour):
     """
-    Analyzes a single, pre-filtered pill contour for shape and specific, single colors.
+    A definitive, hierarchical classifier for shape and color.
     """
-    # --- Shape Analysis ---
+    # --- Shape Analysis (No changes needed) ---
     area = cv2.contourArea(contour)
     perimeter = cv2.arcLength(contour, True)
     shape = "Unknown"
-
     if perimeter > 0:
         epsilon = 0.04 * perimeter
         approx = cv2.approxPolyDP(contour, epsilon, True)
@@ -23,17 +22,12 @@ def get_pill_properties(image_bgr, contour):
         circularity = 4 * np.pi * (area / (perimeter * perimeter))
         _, (w, h), _ = cv2.minAreaRect(contour)
         aspect_ratio = max(w, h) / min(w, h) if min(w, h) > 0 else 0
+        if circularity > 0.82 and aspect_ratio < 1.4: shape = "Round"
+        elif aspect_ratio > 2.0: shape = "Capsule"
+        elif num_vertices == 4: shape = "Rectangular"
+        else: shape = "Oval"
 
-        if circularity > 0.82 and aspect_ratio < 1.4:
-            shape = "Round"
-        elif aspect_ratio > 2.0:
-            shape = "Capsule"
-        elif num_vertices == 4:
-            shape = "Rectangular"
-        else:
-            shape = "Oval"
-
-    # --- SPECIFIC COLOR ANALYSIS ---
+    # --- HIERARCHICAL COLOR ANALYSIS ---
     mask = np.zeros(image_bgr.shape[:2], dtype="uint8")
     cv2.drawContours(mask, [contour], -1, 255, -1)
     kernel = np.ones((3,3), np.uint8)
@@ -42,29 +36,27 @@ def get_pill_properties(image_bgr, contour):
     mean_hsv = cv2.mean(image_hsv, mask=eroded_mask)[:3]
     h, s, v = mean_hsv
 
-    # FIX: Split color ranges into distinct, single-color categories
-    color = "Unknown"
-    if v < 70: color = "Black"
-    elif s < 25 and v > 160: color = "White"
-    elif s < 30 and v > 80: color = "Gray"
-    # Split "Pink/Red"
-    elif (h >= 0 and h <= 10) or (h >= 175 and h <= 180): color = "Red"
-    elif (h >= 160 and h < 175): color = "Pink"
-    # Split "Brown/Orange"
-    elif (h > 15 and h <= 25): color = "Orange"
-    elif (h > 10 and h <= 15): color = "Brown"
-    # Other colors
-    elif (h > 25 and h <= 35): color = "Yellow"
-    elif (h > 35 and h <= 85): color = "Green"
-    elif (h > 85 and h <= 130): color = "Blue"
-    elif (h > 130 and h < 160): color = "Purple"
+    # 1. First, classify achromatic colors (White, Gray, Black). This is most reliable.
+    if s < 40: # Low saturation means it's not a vibrant color
+        if v > 150: color = "White"
+        elif v < 70: color = "Black"
+        else: color = "Gray"
+    # 2. If it's a chromatic color, then check the Hue.
+    else:
+        # Meticulously re-tuned Hue ranges for consistency
+        if (h >= 0 and h <= 10) or (h >= 170 and h <= 180): color = "Red"
+        elif h > 10 and h <= 18: color = "Brown"
+        elif h > 18 and h <= 25: color = "Orange"
+        elif h > 25 and h <= 35: color = "Yellow"
+        elif h > 35 and h <= 85: color = "Green"
+        elif h > 85 and h <= 130: color = "Blue"
+        elif h > 130 and h < 170: color = "Pink" # Pink is a less saturated red/purple
+        else: color = "Unknown"
 
     return shape, color
 
 def is_background_light(image):
-    """
-    Analyzes image corners to determine if the background is light or dark.
-    """
+    """Analyzes image corners to determine if the background is light or dark."""
     h, w, _ = image.shape
     corner_size = int(min(h, w) * 0.1)
     corners = [
@@ -77,9 +69,7 @@ def is_background_light(image):
     return avg_brightness > 120
 
 def detect_on_dark_bg(image, params):
-    """
-    Pipeline optimized for dark backgrounds using LAB color space.
-    """
+    """Pipeline optimized for dark backgrounds using LAB color space."""
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     l_channel, _, _ = cv2.split(lab)
     blurred_l = cv2.GaussianBlur(l_channel, (5, 5), 0)
@@ -89,52 +79,41 @@ def detect_on_dark_bg(image, params):
     open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     closed_mask = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, close_kernel, iterations=3)
     opened_mask = cv2.morphologyEx(closed_mask, cv2.MORPH_OPEN, open_kernel, iterations=2)
-    
     return opened_mask
 
 def detect_on_light_bg(image, params):
-    """
-    Upgraded pipeline for light/complex backgrounds using a full, specific color palette.
-    """
+    """Pipeline for light/complex backgrounds using a full color palette."""
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     
-    # FIX: Updated dictionary with specific color ranges for segmentation
+    # Updated ranges to match the new classifier
     color_ranges = {
         'Red1': [np.array([0, 70, 50]), np.array([10, 255, 255])],
-        'Red2': [np.array([175, 70, 50]), np.array([180, 255, 255])],
-        'Pink': [np.array([160, 40, 50]), np.array([174, 255, 255])],
-        'Orange': [np.array([16, 50, 50]), np.array([25, 255, 255])],
-        'Brown': [np.array([11, 50, 50]), np.array([15, 255, 255])],
+        'Red2': [np.array([170, 70, 50]), np.array([180, 255, 255])],
+        'Pink': [np.array([131, 40, 50]), np.array([169, 255, 255])],
+        'BrownOrange': [np.array([11, 50, 50]), np.array([25, 255, 255])],
         'Yellow': [np.array([26, 40, 50]), np.array([35, 255, 255])],
         'Green': [np.array([36, 40, 50]), np.array([85, 255, 255])],
         'Blue': [np.array([86, 50, 50]), np.array([130, 255, 255])],
-        'Purple': [np.array([131, 50, 50]), np.array([159, 255, 255])]
     }
 
-    # Create a mask for each color and combine them
     combined_mask = np.zeros(hsv.shape[:2], dtype="uint8")
     for lower, upper in color_ranges.values():
         mask = cv2.inRange(hsv, lower, upper)
         combined_mask = cv2.bitwise_or(combined_mask, mask)
 
-    # Special handling for white pills on light backgrounds
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     _, white_thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
     dilated_white = cv2.dilate(white_thresh, np.ones((3,3), np.uint8), iterations=2)
     combined_mask = cv2.bitwise_or(combined_mask, dilated_white)
 
-    # Clean the final combined mask
     close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
     open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     closed_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, close_kernel, iterations=3)
     opened_mask = cv2.morphologyEx(closed_mask, cv2.MORPH_OPEN, open_kernel, iterations=2)
-    
     return opened_mask
 
 def detect_pills_pipeline(image, params):
-    """
-    Master adaptive pipeline. Chooses the best method based on the background.
-    """
+    """Master adaptive pipeline."""
     annotated_image = image.copy()
     
     if is_background_light(image):
@@ -202,7 +181,7 @@ with st.sidebar:
 
         params = {
             'min_area': min_area,
-            'max_area': max_area
+            'max_area': max_.area
         }
 
 # --- Main display area ---
@@ -270,4 +249,4 @@ with col2:
                             'Color': [target_color],
                             'Quantity Found': [len(matches)]
                         }
-                        st.table(pd.DataFrame(match_data))
+                        st.table(pd.DataFrame(match_data))```
