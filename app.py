@@ -9,14 +9,12 @@ import pandas as pd
 
 def auto_estimate_parameters(image):
     """
-    Analyzes the image to automatically guess the best min/max area for pills,
-    making the app work automatically for the user.
+    Analyzes the image to automatically guess the best min/max area for pills.
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (7, 7), 0)
-    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY_INV, 11, 2)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    edges = cv2.Canny(blurred, 50, 150)
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     areas = [cv2.contourArea(c) for c in contours if 100 < cv2.contourArea(c) < 100000]
 
@@ -70,27 +68,22 @@ def get_pill_properties(image_bgr, contour):
 
 def detect_pills_pipeline(image, params):
     """
-    Main pill detection pipeline.
+    Main pill detection pipeline. This version is reverted to use Canny edge
+    detection which is more reliable for the sample images.
     """
     annotated_image = image.copy()
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.medianBlur(gray, 7)
-    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY_INV, 15, 3)
+    blurred = cv2.medianBlur(gray, 5) # Using a 5x5 kernel for blurring
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # --- Reverted to Canny edge detection ---
+    # This method proved to be more effective than adaptive thresholding for this use case.
+    edges = cv2.Canny(blurred, 50, 150)
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     detected_pills = []
     for c in contours:
         area = cv2.contourArea(c)
         if not (params['min_area'] < area < params['max_area']):
-            continue
-
-        perimeter = cv2.arcLength(c, True)
-        if perimeter == 0: continue
-
-        circularity = 4 * np.pi * (area / (perimeter * perimeter))
-        if circularity < 0.4:
             continue
 
         shape, color = get_pill_properties(image, c)
@@ -125,7 +118,6 @@ if uploaded_file is not None:
     scale = 800 / w
     new_h, new_w = int(h * scale), int(w * scale)
     resized_image = cv2.resize(original_image, (new_w, new_h))
-    # FIX: Convert from RGB (PIL/numpy) to BGR (OpenCV)
     st.session_state.img = cv2.cvtColor(resized_image, cv2.COLOR_RGB2BGR)
 
 # --- Sidebar with controls ---
@@ -155,11 +147,9 @@ with col1:
     if st.session_state.img is not None:
         if mode == "Manual ROI Matching":
             st.warning("Draw a box around a single pill to find its matches.")
-            # Convert from BGR (OpenCV) to RGB (for PIL/st_cropper)
             img_for_cropper = cv2.cvtColor(st.session_state.img, cv2.COLOR_BGR2RGB)
             cropped_img_pil = st_cropper(Image.fromarray(img_for_cropper),
                                          realtime_update=True, box_color='lime', aspect_ratio=None)
-            # FIX: Convert back from RGB (PIL) to BGR (OpenCV)
             st.session_state.cropped_img = cv2.cvtColor(np.array(cropped_img_pil), cv2.COLOR_RGB2BGR)
         else:
             st.image(st.session_state.img, channels="BGR")
@@ -177,14 +167,16 @@ with col2:
             if detected_pills:
                 st.write("---")
                 st.subheader("Pill Summary")
-                df = pd.DataFrame(detected_pills)
-                summary_df = df.groupby(['shape', 'color']).size().reset_index(name='quantity')
-                st.table(summary_df)
+                df = pd.DataFrame([p for p in detected_pills if 'contour' in p])
+                # Ensure the DataFrame is not empty before proceeding
+                if not df.empty:
+                    summary_df = df.groupby(['shape', 'color']).size().reset_index(name='quantity')
+                    st.table(summary_df)
 
         elif mode == "Manual ROI Matching":
             if st.button("Find Matching Pills"):
                 cropped_img_cv = st.session_state.get('cropped_img')
-                if cropped_img_cv is None:
+                if cropped_img_cv is None or cropped_img_cv.size == 0:
                     st.error("Please crop an image first.")
                 else:
                     roi_params = {'min_area': 100, 'max_area': cropped_img_cv.shape[0] * cropped_img_cv.shape[1]}
@@ -204,7 +196,7 @@ with col2:
                         match_image = st.session_state.img.copy()
                         for pill in matches:
                             x, y, w, h = cv2.boundingRect(pill['contour'])
-                            cv2.rectangle(match_image, (x, y), (x+w, y+h), (0, 255, 255), 4) # Yellow highlight
+                            cv2.rectangle(match_image, (x, y), (x+w, y+h), (0, 255, 255), 4)
 
                         st.image(match_image, channels="BGR", caption=f"Highlighted {len(matches)} matching pill(s)")
                         st.write("---")
