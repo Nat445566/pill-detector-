@@ -11,7 +11,6 @@ def get_pill_properties(image_bgr, contour):
     """
     Analyzes a single, pre-filtered pill contour for shape and color.
     """
-    # --- Shape Analysis ---
     area = cv2.contourArea(contour)
     perimeter = cv2.arcLength(contour, True)
     shape = "Unknown"
@@ -24,7 +23,6 @@ def get_pill_properties(image_bgr, contour):
         _, (w, h), _ = cv2.minAreaRect(contour)
         aspect_ratio = max(w, h) / min(w, h) if min(w, h) > 0 else 0
 
-        # Refined shape logic
         if circularity > 0.82 and aspect_ratio < 1.4:
             shape = "Round"
         elif aspect_ratio > 2.0:
@@ -34,17 +32,16 @@ def get_pill_properties(image_bgr, contour):
         else:
             shape = "Oval"
 
-    # --- Color Analysis ---
     mask = np.zeros(image_bgr.shape[:2], dtype="uint8")
     cv2.drawContours(mask, [contour], -1, 255, -1)
     kernel = np.ones((3,3), np.uint8)
-    eroded_mask = cv2.erode(mask, kernel, iterations=2) # Erode more to get pure color
+    eroded_mask = cv2.erode(mask, kernel, iterations=2)
     image_hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     mean_hsv = cv2.mean(image_hsv, mask=eroded_mask)[:3]
     h, s, v = mean_hsv
 
-    # Re-calibrated HSV ranges for accuracy
     color = "Unknown"
+    # Tuned HSV ranges for better classification across backgrounds
     if s < 35 and v > 150: color = "White"
     elif (h > 22 and h < 38) and s > 40: color = "Yellow"
     elif (h >= 8 and h <= 22) and s > 50: color = "Brown/Orange"
@@ -53,60 +50,98 @@ def get_pill_properties(image_bgr, contour):
 
     return shape, color
 
-def detect_pills_pipeline(image, params):
+def is_background_light(image):
     """
-    A definitive, robust pipeline using LAB color space and Otsu's thresholding.
+    Analyzes image corners to determine if the background is light or dark.
     """
-    annotated_image = image.copy()
+    h, w, _ = image.shape
+    corner_size = int(min(h, w) * 0.1)  # 10% of the smaller dimension
+    corners = [
+        image[0:corner_size, 0:corner_size],
+        image[0:corner_size, w-corner_size:w],
+        image[h-corner_size:h, 0:corner_size],
+        image[h-corner_size:h, w-corner_size:w]
+    ]
+    
+    # Calculate the average brightness of the corners
+    avg_brightness = np.mean([cv2.cvtColor(c, cv2.COLOR_BGR2GRAY).mean() for c in corners])
+    
+    # If average brightness is high, background is light
+    return avg_brightness > 127
 
-    # 1. CONVERT TO LAB COLOR SPACE and extract the 'L' (Lightness) channel.
-    # This channel provides the best separation of pills from the dark background.
+def detect_on_dark_bg(image, params):
+    """
+    Pipeline optimized for dark backgrounds using LAB color space.
+    """
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     l_channel, _, _ = cv2.split(lab)
-
-    # Apply a blur to reduce noise
     blurred_l = cv2.GaussianBlur(l_channel, (5, 5), 0)
-
-    # 2. AUTOMATIC THRESHOLDING (OTSU'S METHOD)
-    # This is the most reliable way to create a binary mask of the pills.
     _, thresh = cv2.threshold(blurred_l, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    # 3. SYSTEMATICALLY CLEAN THE MASK
-    # This creates solid shapes and is crucial for reliable detection.
-    # Use a larger kernel for closing to fill bigger holes.
+    
     close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    # Use a smaller kernel for opening to remove fine noise.
     open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-
-    # Fill holes inside the pills
     closed_mask = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, close_kernel, iterations=3)
-    # Remove small noise speckles from the background
     opened_mask = cv2.morphologyEx(closed_mask, cv2.MORPH_OPEN, open_kernel, iterations=2)
+    
+    return opened_mask
 
-    # 4. FIND AND FILTER CONTOURS from the perfectly clean mask
-    contours, _ = cv2.findContours(opened_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+def detect_on_light_bg(image, params):
+    """
+    Pipeline optimized for light or complex backgrounds using HSV color segmentation.
+    """
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    
+    color_ranges = {
+        'NotWhite': [np.array([0, 35, 50]), np.array([180, 255, 255])], # Mask for all colored pills
+    }
 
+    # Mask for all non-white pills
+    combined_mask = cv2.inRange(hsv, color_ranges['NotWhite'][0], color_ranges['NotWhite'][1])
+
+    # For white backgrounds, we need to find dark objects, so we invert a grayscale threshold
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    _, white_thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    combined_mask = cv2.bitwise_or(combined_mask, white_thresh)
+
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    closed_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, close_kernel, iterations=3)
+    opened_mask = cv2.morphologyEx(closed_mask, cv2.MORPH_OPEN, open_kernel, iterations=2)
+    
+    return opened_mask
+
+def detect_pills_pipeline(image, params):
+    """
+    Master adaptive pipeline. Chooses the best method based on the background.
+    """
+    annotated_image = image.copy()
+    
+    # ADAPTIVE STRATEGY: Choose pipeline based on background color
+    if is_background_light(image):
+        final_mask = detect_on_light_bg(image, params)
+    else:
+        final_mask = detect_on_dark_bg(image, params)
+        
+    contours, _ = cv2.findContours(final_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
     detected_pills = []
     for c in contours:
         area = cv2.contourArea(c)
-        # First filter by area
         if not (params['min_area'] < area < params['max_area']):
             continue
 
-        # Second, powerful filter by solidity to ensure the shape is pill-like
         hull = cv2.convexHull(c)
+        if hull.shape[0] < 3: continue # Avoid errors with malformed hulls
         solidity = float(area) / cv2.contourArea(hull)
         if solidity < 0.9:
             continue
 
-        # 5. CLASSIFY the cleanly detected pills
         shape, color = get_pill_properties(image, c)
         if color == "Unknown" or shape == "Unknown":
             continue
 
         detected_pills.append({'shape': shape, 'color': color, 'contour': c})
 
-    # Draw results on the image
     for pill in detected_pills:
         x, y, w, h = cv2.boundingRect(pill['contour'])
         cv2.rectangle(annotated_image, (x, y), (x + w, y + h), (0, 255, 0), 3)
@@ -142,7 +177,6 @@ with st.sidebar:
 
     with st.expander("Manual Tuning & Advanced Options"):
         st.write("Adjust these sliders if detection is not perfect.")
-        # Adjusted default to be more inclusive of small pills
         min_area = st.slider("Min Area", 50, 5000, 200)
         max_area = st.slider("Max Area", 5000, 100000, 50000)
 
