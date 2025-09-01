@@ -10,7 +10,6 @@ import pandas as pd
 def get_pill_properties(image_bgr, contour):
     """
     Analyzes a single pill contour to determine its shape and color.
-    This version has heavily refined shape and color logic.
     """
     # --- Shape Analysis ---
     area = cv2.contourArea(contour)
@@ -22,13 +21,12 @@ def get_pill_properties(image_bgr, contour):
         _, (w, h), _ = cv2.minAreaRect(contour)
         aspect_ratio = max(w, h) / min(w, h) if min(w, h) > 0 else 0
 
-        # FIX 3: Stricter shape definitions. Capsule must be very long.
         if circularity > 0.85 and aspect_ratio < 1.3:
             shape = "Round"
-        elif aspect_ratio > 2.5: # Much stricter for capsules
+        elif aspect_ratio > 2.5:
             shape = "Capsule"
         else:
-            shape = "Oval" # More shapes will correctly be classified as Oval now
+            shape = "Oval"
 
     # --- Color Analysis ---
     mask = np.zeros(image_bgr.shape[:2], dtype="uint8")
@@ -37,32 +35,31 @@ def get_pill_properties(image_bgr, contour):
     mean_hsv = cv2.mean(image_hsv, mask=mask)[:3]
     h, s, v = mean_hsv
 
-    # FIX 2: Refined HSV color ranges for better accuracy
+    # Refined HSV color ranges for better accuracy
     color = "Unknown"
-    # Stricter 'White' definition: very low saturation, very high brightness
     if s < 25 and v > 180: color = "White"
-    # Broader 'Yellow' definition to catch paler yellows
     elif (h > 20 and h < 35) and s > 50: color = "Yellow"
     elif (h >= 100 and h <= 130) and s > 60: color = "Blue"
     elif (h >= 35 and h <= 85) and s > 50: color = "Green"
     elif (h >= 8 and h <= 20) and s > 70: color = "Brown/Orange"
 
-
     return shape, color
 
 def detect_pills_pipeline(image, params):
     """
-    Main pill detection pipeline using a robust thresholding method.
+    Main pill detection pipeline using robust ADAPTIVE thresholding.
     """
     annotated_image = image.copy()
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (7, 7), 0)
 
-    # FIX 1: Replaced Canny with Otsu's Thresholding for consistent detection
-    # This automatically finds the best threshold to separate pills from the background.
-    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # THE KEY FIX: Using Adaptive Thresholding.
+    # This handles pills of different brightness levels correctly.
+    # It calculates a local threshold for each small region.
+    thresh = cv2.adaptiveThreshold(blurred, 255,
+                                   cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY_INV, 15, 3)
 
-    # Find contours on the thresholded image
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     detected_pills = []
@@ -71,7 +68,6 @@ def detect_pills_pipeline(image, params):
         if not (params['min_area'] < area < params['max_area']):
             continue
 
-        # Solidity filter is still important to remove non-pill-like noise
         hull = cv2.convexHull(c)
         solidity = float(area) / cv2.contourArea(hull)
         if solidity < 0.9:
@@ -106,25 +102,25 @@ if uploaded_file is not None:
     pil_image = Image.open(uploaded_file).convert('RGB')
     original_image = np.array(pil_image)
     h, w, _ = original_image.shape
-    # Standardize on a slightly smaller size for faster processing
-    scale = 600 / w
+    scale = 800 / w
     new_h, new_w = int(h * scale), int(w * scale)
     resized_image = cv2.resize(original_image, (new_w, new_h))
     st.session_state.img = cv2.cvtColor(resized_image, cv2.COLOR_RGB2BGR)
 
-# Sidebar and parameter estimation (can remain the same)
+# --- Sidebar with controls ---
 with st.sidebar:
     st.title("Controls")
     mode = st.radio("Select Mode", ("Automatic Detection", "Manual ROI Matching"))
 
     with st.expander("Manual Tuning & Advanced Options"):
         st.write("Adjust these if the automatic detection is not perfect.")
-        # Auto-parameter estimation for min/max area is still useful
+        # We can estimate parameters using a simple Canny edge for speed,
+        # but the main pipeline will use the more robust adaptive method.
         if st.session_state.img is not None:
             gray_for_params = cv2.cvtColor(st.session_state.img, cv2.COLOR_BGR2GRAY)
             blurred_for_params = cv2.GaussianBlur(gray_for_params, (7, 7), 0)
-            _, thresh_for_params = cv2.threshold(blurred_for_params, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            contours_for_params, _ = cv2.findContours(thresh_for_params, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            edges_for_params = cv2.Canny(blurred_for_params, 50, 150)
+            contours_for_params, _ = cv2.findContours(edges_for_params, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             areas = [cv2.contourArea(c) for c in contours_for_params if cv2.contourArea(c) > 100]
             if areas:
                 median_area = np.median(areas)
@@ -143,7 +139,7 @@ with st.sidebar:
             'max_area': max_area
         }
 
-# Main display columns
+# --- Main display area ---
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("Original Image")
@@ -159,6 +155,7 @@ with col1:
     else:
         st.info("Awaiting image upload.")
 
+# --- Detection Logic and Results Display ---
 with col2:
     st.subheader("Detection Result")
     if st.session_state.img is not None:
