@@ -9,9 +9,9 @@ import pandas as pd
 
 def get_pill_properties(image_bgr, contour):
     """
-    A definitive, hierarchical classifier for shape and color.
+    A definitive, hierarchical classifier for shape and color, robust to lighting changes.
     """
-    # --- Shape Analysis ---
+    # --- Shape Analysis (No changes needed) ---
     area = cv2.contourArea(contour)
     perimeter = cv2.arcLength(contour, True)
     shape = "Unknown"
@@ -36,21 +36,34 @@ def get_pill_properties(image_bgr, contour):
     mean_hsv = cv2.mean(image_hsv, mask=eroded_mask)[:3]
     h, s, v = mean_hsv
 
-    # 1. First, classify achromatic colors (White, Gray, Black).
-    if s < 40:
+    # 1. First, classify achromatic colors (White, Gray, Black) using Saturation and Value.
+    if s < 45: # Low saturation means it's not a vibrant color
         if v > 150: color = "White"
         elif v < 70: color = "Black"
         else: color = "Gray"
-    # 2. If it's a chromatic color, then check the Hue.
+    # 2. If it's a chromatic color, then use a more nuanced classification.
     else:
-        if (h >= 0 and h <= 10) or (h >= 170 and h <= 180): color = "Red"
-        elif h > 10 and h <= 18: color = "Brown"
-        elif h > 18 and h <= 25: color = "Orange"
-        elif h > 25 and h <= 35: color = "Yellow"
-        elif h > 35 and h <= 85: color = "Green"
-        elif h > 85 and h <= 130: color = "Blue"
-        elif h > 130 and h < 170: color = "Pink"
-        else: color = "Unknown"
+        # Handle Red vs. Pink using Hue and Saturation
+        if (h <= 10 or h >= 165):
+            if s > 100: # Vibrant reds are "Red"
+                color = "Red"
+            else: # Less vibrant reds are "Pink"
+                color = "Pink"
+        # Handle Brown vs. Orange using Hue, Saturation, and Value
+        elif h > 10 and h <= 25:
+            if s < 100 and v < 200: # Darker, less saturated is "Brown"
+                color = "Brown"
+            else: # Brighter, more saturated is "Orange"
+                color = "Orange"
+        # Handle remaining colors with re-tuned ranges
+        elif h > 25 and h <= 35:
+            color = "Yellow"
+        elif h > 35 and h <= 85:
+            color = "Green"
+        elif h > 85 and h <= 130:
+            color = "Blue"
+        else:
+            color = "Unknown" # Fallback for unclassified colors
 
     return shape, color
 
@@ -86,8 +99,8 @@ def detect_on_light_bg(image, params):
     
     color_ranges = {
         'Red1': [np.array([0, 70, 50]), np.array([10, 255, 255])],
-        'Red2': [np.array([170, 70, 50]), np.array([180, 255, 255])],
-        'Pink': [np.array([131, 40, 50]), np.array([169, 255, 255])],
+        'Red2': [np.array([165, 70, 50]), np.array([180, 255, 255])],
+        'Pink': [np.array([131, 40, 50]), np.array([164, 255, 255])],
         'BrownOrange': [np.array([11, 50, 50]), np.array([25, 255, 255])],
         'Yellow': [np.array([26, 40, 50]), np.array([35, 255, 255])],
         'Green': [np.array([36, 40, 50]), np.array([85, 255, 255])],
@@ -177,7 +190,6 @@ with st.sidebar:
         min_area = st.slider("Min Area", 50, 5000, 100)
         max_area = st.slider("Max Area", 5000, 100000, 50000)
 
-        # THIS IS THE CORRECTED LINE
         params = {
             'min_area': min_area,
             'max_area': max_area
