@@ -33,7 +33,7 @@ def get_pill_properties(image_bgr, contour):
         else:
             shape = "Oval"
 
-    # --- EXPANDED COLOR ANALYSIS ---
+    # --- Expanded Color Analysis ---
     mask = np.zeros(image_bgr.shape[:2], dtype="uint8")
     cv2.drawContours(mask, [contour], -1, 255, -1)
     kernel = np.ones((3,3), np.uint8)
@@ -42,9 +42,9 @@ def get_pill_properties(image_bgr, contour):
     mean_hsv = cv2.mean(image_hsv, mask=eroded_mask)[:3]
     h, s, v = mean_hsv
 
-    # Comprehensive HSV color ranges
+    # Comprehensive HSV color ranges for classification
     color = "Unknown"
-    if v < 60: color = "Black"
+    if v < 70: color = "Black"
     elif s < 25 and v > 160: color = "White"
     elif s < 30 and v > 80: color = "Gray"
     elif (h >= 0 and h <= 10) or (h >= 160 and h <= 180): color = "Pink/Red"
@@ -53,7 +53,6 @@ def get_pill_properties(image_bgr, contour):
     elif (h > 35 and h <= 85): color = "Green"
     elif (h > 85 and h <= 130): color = "Blue"
     elif (h > 130 and h < 160): color = "Purple/Violet"
-
 
     return shape, color
 
@@ -70,7 +69,7 @@ def is_background_light(image):
         image[h-corner_size:h, w-corner_size:w]
     ]
     avg_brightness = np.mean([cv2.cvtColor(c, cv2.COLOR_BGR2GRAY).mean() for c in corners])
-    return avg_brightness > 120 # Lowered threshold slightly for more robustness
+    return avg_brightness > 120
 
 def detect_on_dark_bg(image, params):
     """
@@ -90,14 +89,15 @@ def detect_on_dark_bg(image, params):
 
 def detect_on_light_bg(image, params):
     """
-    Upgraded pipeline for light/complex backgrounds using a full color palette.
+    Upgraded pipeline for light/complex backgrounds using a full, more forgiving color palette.
     """
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     
     # Comprehensive color ranges for segmentation
     color_ranges = {
-        'Red1': [np.array([0, 70, 50]), np.array([10, 255, 255])],
-        'Red2': [np.array([160, 70, 50]), np.array([180, 255, 255])],
+        # FIX: Lowered minimum saturation (S value) from 70 to 40 for Red/Pink to catch pale pills
+        'Red1': [np.array([0, 40, 50]), np.array([10, 255, 255])],
+        'Red2': [np.array([160, 40, 50]), np.array([180, 255, 255])],
         'BrownOrange': [np.array([11, 50, 50]), np.array([25, 255, 255])],
         'Yellow': [np.array([26, 40, 50]), np.array([35, 255, 255])],
         'Green': [np.array([36, 40, 50]), np.array([85, 255, 255])],
@@ -113,8 +113,7 @@ def detect_on_light_bg(image, params):
 
     # Special handling for white pills on light backgrounds
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, white_thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY) # Find very white objects
-    # Dilate to make white pills more solid
+    _, white_thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
     dilated_white = cv2.dilate(white_thresh, np.ones((3,3), np.uint8), iterations=2)
     combined_mask = cv2.bitwise_or(combined_mask, dilated_white)
 
@@ -192,7 +191,7 @@ with st.sidebar:
 
     with st.expander("Manual Tuning & Advanced Options"):
         st.write("Adjust these sliders if detection is not perfect.")
-        min_area = st.slider("Min Area", 50, 5000, 200)
+        min_area = st.slider("Min Area", 50, 5000, 100) # Lowered default for small pills
         max_area = st.slider("Max Area", 5000, 100000, 50000)
 
         params = {
