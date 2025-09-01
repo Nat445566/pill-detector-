@@ -31,7 +31,6 @@ def get_pill_properties(image_bgr, contour):
     """
     Analyzes a single pill contour to determine its shape and color.
     """
-    # --- Shape Analysis ---
     area = cv2.contourArea(contour)
     perimeter = cv2.arcLength(contour, True)
     shape = "Unknown"
@@ -41,14 +40,13 @@ def get_pill_properties(image_bgr, contour):
         _, (w, h), _ = cv2.minAreaRect(contour)
         aspect_ratio = max(w, h) / min(w, h) if min(w, h) > 0 else 0
 
-        if circularity > 0.85 and aspect_ratio < 1.2:
+        if circularity > 0.85 and aspect_ratio < 1.3:
             shape = "Round"
         elif aspect_ratio > 1.8:
             shape = "Capsule"
         else:
             shape = "Oval"
 
-    # --- Color Analysis ---
     mask = np.zeros(image_bgr.shape[:2], dtype="uint8")
     cv2.drawContours(mask, [contour], -1, 255, -1)
     image_hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
@@ -56,34 +54,40 @@ def get_pill_properties(image_bgr, contour):
     h, s, v = mean_hsv
 
     color = "Unknown"
-    if s < 35 and v > 170: color = "White"
-    elif s < 65 and v < 60: color = "Black"
+    if s < 40 and v > 160: color = "White"
     elif (h >= 100 and h <= 130) and s > 70: color = "Blue"
     elif (h >= 35 and h <= 85) and s > 60: color = "Green"
-    elif (h >= 8 and h <= 30) and s > 80: color = "Brown/Orange"
-    elif (h < 10 or h > 170) and s > 80: color = "Red"
-    elif (h > 20 and h < 35) and s > 60: color = "Yellow"
+    elif (h >= 8 and h <= 20) and s > 80: color = "Brown/Orange"
+    elif (h > 20 and h < 35) and s > 80: color = "Yellow"
 
     return shape, color
 
 def detect_pills_pipeline(image, params):
     """
-    Main pill detection pipeline. This version is reverted to use Canny edge
-    detection which is more reliable for the sample images.
+    Main pill detection pipeline with a solidity filter to reject background noise.
     """
     annotated_image = image.copy()
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.medianBlur(gray, 5) # Using a 5x5 kernel for blurring
-
-    # --- Reverted to Canny edge detection ---
-    # This method proved to be more effective than adaptive thresholding for this use case.
-    edges = cv2.Canny(blurred, 50, 150)
+    blurred = cv2.medianBlur(gray, 7)
+    edges = cv2.Canny(blurred, 30, 150) # Adjusted Canny thresholds slightly
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     detected_pills = []
     for c in contours:
         area = cv2.contourArea(c)
         if not (params['min_area'] < area < params['max_area']):
+            continue
+
+        # --- KEY FIX: ADDING THE SOLIDITY FILTER ---
+        # This filter rejects non-convex shapes like the background stripes.
+        hull = cv2.convexHull(c)
+        hull_area = cv2.contourArea(hull)
+        if hull_area == 0:
+            continue # Avoid division by zero
+        
+        solidity = float(area) / hull_area
+        # Pills should be very solid. A threshold of 0.9 is a good starting point.
+        if solidity < 0.9:
             continue
 
         shape, color = get_pill_properties(image, c)
@@ -100,7 +104,7 @@ def detect_pills_pipeline(image, params):
 
     return annotated_image, len(detected_pills), detected_pills
 
-# --- Streamlit Web App Interface ---
+# --- Streamlit Web App Interface (No changes needed below this line) ---
 
 st.set_page_config(layout="wide")
 st.title("Intelligent Pill Detector and Identifier")
@@ -120,7 +124,6 @@ if uploaded_file is not None:
     resized_image = cv2.resize(original_image, (new_w, new_h))
     st.session_state.img = cv2.cvtColor(resized_image, cv2.COLOR_RGB2BGR)
 
-# --- Sidebar with controls ---
 with st.sidebar:
     st.title("Controls")
     mode = st.radio("Select Mode", ("Automatic Detection", "Manual ROI Matching"))
@@ -140,7 +143,6 @@ with st.sidebar:
             'max_area': max_area
         }
 
-# --- Main display area ---
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("Original Image")
@@ -156,7 +158,6 @@ with col1:
     else:
         st.info("Awaiting image upload.")
 
-# --- Detection Logic and Results Display ---
 with col2:
     st.subheader("Detection Result")
     if st.session_state.img is not None:
@@ -168,7 +169,6 @@ with col2:
                 st.write("---")
                 st.subheader("Pill Summary")
                 df = pd.DataFrame([p for p in detected_pills if 'contour' in p])
-                # Ensure the DataFrame is not empty before proceeding
                 if not df.empty:
                     summary_df = df.groupby(['shape', 'color']).size().reset_index(name='quantity')
                     st.table(summary_df)
@@ -183,7 +183,7 @@ with col2:
                     _, _, pills_in_roi = detect_pills_pipeline(cropped_img_cv, roi_params)
 
                     if not pills_in_roi:
-                        st.error("Could not detect a pill in the selected ROI. Try drawing a tighter box.")
+                        st.error("Could not detect a pill in the selected ROI. Try drawing a tighter box around one pill.")
                     else:
                         target_pill = pills_in_roi[0]
                         target_shape = target_pill['shape']
