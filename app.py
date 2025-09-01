@@ -184,7 +184,7 @@ with col2:
     if st.session_state.img is not None:
         # Use the manually tuned parameters for both modes for consistency
         # Or you could use auto_params_live for automatic mode if you prefer
-        
+
         if mode == "Automatic Detection":
             annotated_image, pill_count, detected_pills = detect_pills_pipeline(st.session_state.img, params)
             st.image(annotated_image, channels="BGR", caption=f"Found {pill_count} pill(s)")
