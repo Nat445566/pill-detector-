@@ -9,7 +9,7 @@ import pandas as pd
 
 def get_pill_properties(image_bgr, contour):
     """
-    Analyzes a single, pre-filtered pill contour for shape and a wide range of colors.
+    Analyzes a single, pre-filtered pill contour for shape and specific, single colors.
     """
     # --- Shape Analysis ---
     area = cv2.contourArea(contour)
@@ -33,7 +33,7 @@ def get_pill_properties(image_bgr, contour):
         else:
             shape = "Oval"
 
-    # --- Expanded Color Analysis ---
+    # --- SPECIFIC COLOR ANALYSIS ---
     mask = np.zeros(image_bgr.shape[:2], dtype="uint8")
     cv2.drawContours(mask, [contour], -1, 255, -1)
     kernel = np.ones((3,3), np.uint8)
@@ -42,17 +42,22 @@ def get_pill_properties(image_bgr, contour):
     mean_hsv = cv2.mean(image_hsv, mask=eroded_mask)[:3]
     h, s, v = mean_hsv
 
-    # Comprehensive HSV color ranges for classification
+    # FIX: Split color ranges into distinct, single-color categories
     color = "Unknown"
     if v < 70: color = "Black"
     elif s < 25 and v > 160: color = "White"
     elif s < 30 and v > 80: color = "Gray"
-    elif (h >= 0 and h <= 10) or (h >= 160 and h <= 180): color = "Pink/Red"
-    elif (h > 10 and h <= 25): color = "Brown/Orange"
+    # Split "Pink/Red"
+    elif (h >= 0 and h <= 10) or (h >= 175 and h <= 180): color = "Red"
+    elif (h >= 160 and h < 175): color = "Pink"
+    # Split "Brown/Orange"
+    elif (h > 15 and h <= 25): color = "Orange"
+    elif (h > 10 and h <= 15): color = "Brown"
+    # Other colors
     elif (h > 25 and h <= 35): color = "Yellow"
     elif (h > 35 and h <= 85): color = "Green"
     elif (h > 85 and h <= 130): color = "Blue"
-    elif (h > 130 and h < 160): color = "Purple/Violet"
+    elif (h > 130 and h < 160): color = "Purple"
 
     return shape, color
 
@@ -89,20 +94,21 @@ def detect_on_dark_bg(image, params):
 
 def detect_on_light_bg(image, params):
     """
-    Upgraded pipeline for light/complex backgrounds using a full, more forgiving color palette.
+    Upgraded pipeline for light/complex backgrounds using a full, specific color palette.
     """
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     
-    # Comprehensive color ranges for segmentation
+    # FIX: Updated dictionary with specific color ranges for segmentation
     color_ranges = {
-        # FIX: Lowered minimum saturation (S value) from 70 to 40 for Red/Pink to catch pale pills
-        'Red1': [np.array([0, 40, 50]), np.array([10, 255, 255])],
-        'Red2': [np.array([160, 40, 50]), np.array([180, 255, 255])],
-        'BrownOrange': [np.array([11, 50, 50]), np.array([25, 255, 255])],
+        'Red1': [np.array([0, 70, 50]), np.array([10, 255, 255])],
+        'Red2': [np.array([175, 70, 50]), np.array([180, 255, 255])],
+        'Pink': [np.array([160, 40, 50]), np.array([174, 255, 255])],
+        'Orange': [np.array([16, 50, 50]), np.array([25, 255, 255])],
+        'Brown': [np.array([11, 50, 50]), np.array([15, 255, 255])],
         'Yellow': [np.array([26, 40, 50]), np.array([35, 255, 255])],
         'Green': [np.array([36, 40, 50]), np.array([85, 255, 255])],
         'Blue': [np.array([86, 50, 50]), np.array([130, 255, 255])],
-        'PurpleViolet': [np.array([131, 50, 50]), np.array([159, 255, 255])]
+        'Purple': [np.array([131, 50, 50]), np.array([159, 255, 255])]
     }
 
     # Create a mask for each color and combine them
@@ -191,7 +197,7 @@ with st.sidebar:
 
     with st.expander("Manual Tuning & Advanced Options"):
         st.write("Adjust these sliders if detection is not perfect.")
-        min_area = st.slider("Min Area", 50, 5000, 100) # Lowered default for small pills
+        min_area = st.slider("Min Area", 50, 5000, 100)
         max_area = st.slider("Max Area", 5000, 100000, 50000)
 
         params = {
