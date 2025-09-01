@@ -9,7 +9,7 @@ import pandas as pd
 
 def get_pill_properties(image_bgr, contour):
     """
-    Analyzes a single, pre-detected pill contour for shape and color.
+    Analyzes a single, pre-filtered pill contour for shape and color.
     """
     # --- Shape Analysis ---
     area = cv2.contourArea(contour)
@@ -36,70 +36,67 @@ def get_pill_properties(image_bgr, contour):
     # --- Color Analysis ---
     mask = np.zeros(image_bgr.shape[:2], dtype="uint8")
     cv2.drawContours(mask, [contour], -1, 255, -1)
-    # Erode the mask slightly to avoid noisy edge pixels
     kernel = np.ones((3,3), np.uint8)
     eroded_mask = cv2.erode(mask, kernel, iterations=1)
     image_hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     mean_hsv = cv2.mean(image_hsv, mask=eroded_mask)[:3]
     h, s, v = mean_hsv
 
-    # FIX: Re-calibrated HSV ranges for better color accuracy
+    # Re-calibrated HSV ranges for accuracy
     color = "Unknown"
-    # White: Low saturation, high brightness
     if s < 35 and v > 150: color = "White"
-    # Yellow: Hue between orange and green
     elif (h > 22 and h < 38) and s > 40: color = "Yellow"
-    # Brown/Orange: Low hue values
     elif (h >= 8 and h <= 22) and s > 50: color = "Brown/Orange"
-    # Blue: High hue values
     elif (h >= 95 and h <= 130) and s > 50: color = "Blue"
-    # Green: Hue between yellow and blue
     elif (h >= 38 and h <= 90) and s > 40: color = "Green"
 
     return shape, color
 
 def detect_pills_pipeline(image, params):
     """
-    A robust pipeline using background subtraction to isolate pills before detection.
+    A robust pipeline using perfected background subtraction and intelligent filtering.
     """
     annotated_image = image.copy()
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # 1. BACKGROUND SUBTRACTION - THE KEY TO ROBUSTNESS
-    # Create a heavily blurred image to estimate the background
-    # The kernel size must be large and odd
-    kernel_size = 51
-    background = cv2.medianBlur(gray, kernel_size)
-    # Subtract the background from the original grayscale image
-    foreground = cv2.subtract(gray, background)
-    # Invert the foreground so pills are white and background is black
-    inverted_foreground = cv2.bitwise_not(foreground)
+    # 1. ROBUST BACKGROUND SUBTRACTION
+    # Estimate background with a large median blur to erase pills
+    background = cv2.medianBlur(gray, 51)
+    # Subtract background to isolate pills
+    foreground = cv2.subtract(background, gray)
 
-    # 2. THRESHOLD THE CLEAN FOREGROUND IMAGE
-    # Now that the background is gone, thresholding is much more effective.
-    _, thresh = cv2.threshold(inverted_foreground, 150, 255, cv2.THRESH_BINARY)
+    # 2. AUTOMATIC THRESHOLDING
+    # Use Otsu's method to automatically find the best threshold value. This is the critical fix.
+    _, thresh = cv2.threshold(foreground, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # 3. CLEAN THE MASK to create solid shapes for detection
+    # 3. CLEAN THE MASK
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    # Remove noise
     opened_mask = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
+    # Fill holes
     closed_mask = cv2.morphologyEx(opened_mask, cv2.MORPH_CLOSE, kernel, iterations=3)
 
-    # 4. FIND CONTOURS on the final, clean mask
+    # 4. FIND AND FILTER CONTOURS
     contours, _ = cv2.findContours(closed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     detected_pills = []
     for c in contours:
         area = cv2.contourArea(c)
+        perimeter = cv2.arcLength(c, True)
+
+        # First filter by area
         if not (params['min_area'] < area < params['max_area']):
             continue
 
-        # Solidity check is a good final filter
-        hull = cv2.convexHull(c)
-        solidity = float(area) / cv2.contourArea(hull)
-        if solidity < 0.9:
+        # Second filter by circularity to reject non-pill shapes
+        if perimeter > 0:
+            circularity = 4 * np.pi * (area / (perimeter * perimeter))
+            if circularity < 0.6: # Reject irregular shapes
+                continue
+        else:
             continue
 
-        # 5. CLASSIFY the cleanly detected objects
+        # 5. CLASSIFY the cleanly detected pills
         shape, color = get_pill_properties(image, c)
         if color == "Unknown" or shape == "Unknown":
             continue
@@ -142,7 +139,6 @@ with st.sidebar:
 
     with st.expander("Manual Tuning & Advanced Options"):
         st.write("Adjust these sliders if detection is not perfect.")
-        # FIX: Lower default min_area to catch smaller pills
         min_area = st.slider("Min Area", 50, 5000, 150)
         max_area = st.slider("Max Area", 5000, 100000, 50000)
 
