@@ -212,4 +212,4 @@ with col2:
                             'Color': [target_color],
                             'Quantity Found': [len(matches)]
                         }
-                        st.table(pd.DataFrame(match_data))```
+                        st.table(pd.DataFrame(match_data))
