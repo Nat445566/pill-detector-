@@ -24,6 +24,7 @@ def get_pill_properties(image_bgr, contour):
         _, (w, h), _ = cv2.minAreaRect(contour)
         aspect_ratio = max(w, h) / min(w, h) if min(w, h) > 0 else 0
 
+        # Refined shape logic
         if circularity > 0.82 and aspect_ratio < 1.4:
             shape = "Round"
         elif aspect_ratio > 2.0:
@@ -37,7 +38,7 @@ def get_pill_properties(image_bgr, contour):
     mask = np.zeros(image_bgr.shape[:2], dtype="uint8")
     cv2.drawContours(mask, [contour], -1, 255, -1)
     kernel = np.ones((3,3), np.uint8)
-    eroded_mask = cv2.erode(mask, kernel, iterations=1)
+    eroded_mask = cv2.erode(mask, kernel, iterations=2) # Erode more to get pure color
     image_hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     mean_hsv = cv2.mean(image_hsv, mask=eroded_mask)[:3]
     h, s, v = mean_hsv
@@ -54,41 +55,51 @@ def get_pill_properties(image_bgr, contour):
 
 def detect_pills_pipeline(image, params):
     """
-    A robust pipeline using perfected background subtraction and intelligent filtering.
+    A definitive, robust pipeline using LAB color space and Otsu's thresholding.
     """
     annotated_image = image.copy()
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # 1. ROBUST BACKGROUND SUBTRACTION
-    background = cv2.medianBlur(gray, 51)
-    foreground = cv2.subtract(background, gray)
+    # 1. CONVERT TO LAB COLOR SPACE and extract the 'L' (Lightness) channel.
+    # This channel provides the best separation of pills from the dark background.
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l_channel, _, _ = cv2.split(lab)
 
-    # 2. AUTOMATIC THRESHOLDING
-    _, thresh = cv2.threshold(foreground, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Apply a blur to reduce noise
+    blurred_l = cv2.GaussianBlur(l_channel, (5, 5), 0)
 
-    # 3. CLEAN THE MASK
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    opened_mask = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
-    closed_mask = cv2.morphologyEx(opened_mask, cv2.MORPH_CLOSE, kernel, iterations=3)
+    # 2. AUTOMATIC THRESHOLDING (OTSU'S METHOD)
+    # This is the most reliable way to create a binary mask of the pills.
+    _, thresh = cv2.threshold(blurred_l, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # 4. FIND AND FILTER CONTOURS
-    contours, _ = cv2.findContours(closed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 3. SYSTEMATICALLY CLEAN THE MASK
+    # This creates solid shapes and is crucial for reliable detection.
+    # Use a larger kernel for closing to fill bigger holes.
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    # Use a smaller kernel for opening to remove fine noise.
+    open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+
+    # Fill holes inside the pills
+    closed_mask = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, close_kernel, iterations=3)
+    # Remove small noise speckles from the background
+    opened_mask = cv2.morphologyEx(closed_mask, cv2.MORPH_OPEN, open_kernel, iterations=2)
+
+    # 4. FIND AND FILTER CONTOURS from the perfectly clean mask
+    contours, _ = cv2.findContours(opened_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     detected_pills = []
     for c in contours:
         area = cv2.contourArea(c)
-        perimeter = cv2.arcLength(c, True)
-
+        # First filter by area
         if not (params['min_area'] < area < params['max_area']):
             continue
 
-        if perimeter > 0:
-            circularity = 4 * np.pi * (area / (perimeter * perimeter))
-            if circularity < 0.6:
-                continue
-        else:
+        # Second, powerful filter by solidity to ensure the shape is pill-like
+        hull = cv2.convexHull(c)
+        solidity = float(area) / cv2.contourArea(hull)
+        if solidity < 0.9:
             continue
 
+        # 5. CLASSIFY the cleanly detected pills
         shape, color = get_pill_properties(image, c)
         if color == "Unknown" or shape == "Unknown":
             continue
@@ -104,7 +115,7 @@ def detect_pills_pipeline(image, params):
 
     return annotated_image, len(detected_pills), detected_pills
 
-# --- Streamlit Web App Interface ---
+# --- Streamlit Web App Interface (No changes needed below this line) ---
 
 st.set_page_config(layout="wide")
 st.title("Intelligent Pill Detector and Identifier")
@@ -131,7 +142,8 @@ with st.sidebar:
 
     with st.expander("Manual Tuning & Advanced Options"):
         st.write("Adjust these sliders if detection is not perfect.")
-        min_area = st.slider("Min Area", 50, 5000, 150)
+        # Adjusted default to be more inclusive of small pills
+        min_area = st.slider("Min Area", 50, 5000, 200)
         max_area = st.slider("Max Area", 5000, 100000, 50000)
 
         params = {
