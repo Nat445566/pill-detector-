@@ -166,7 +166,7 @@ def resize_for_display(image, max_height=400): # <<< KEY CHANGE: Lowered from 50
 # --- Streamlit Web App Interface ---
 
 st.set_page_config(layout="wide")
-st.title("Intelligent Pill Detector and Identifier")
+st.title("Automated Pharmaceutical Tablet Counting System")
 
 if 'img' not in st.session_state:
     st.session_state.img = None
