@@ -11,7 +11,7 @@ def get_pill_properties(image_bgr, contour):
     """
     A definitive, hierarchical classifier for shape and color, robust to lighting changes.
     """
-    # --- Shape Analysis (No changes needed) ---
+    # --- Shape Analysis ---
     area = cv2.contourArea(contour)
     perimeter = cv2.arcLength(contour, True)
     shape = "Unknown"
@@ -36,34 +36,23 @@ def get_pill_properties(image_bgr, contour):
     mean_hsv = cv2.mean(image_hsv, mask=eroded_mask)[:3]
     h, s, v = mean_hsv
 
-    # 1. First, classify achromatic colors (White, Gray, Black) using Saturation and Value.
-    if s < 45: # Low saturation means it's not a vibrant color
+    # 1. First, classify achromatic colors (White, Gray, Black).
+    if s < 45:
         if v > 150: color = "White"
         elif v < 70: color = "Black"
         else: color = "Gray"
     # 2. If it's a chromatic color, then use a more nuanced classification.
     else:
-        # Handle Red vs. Pink using Hue and Saturation
         if (h <= 10 or h >= 165):
-            if s > 120: # Vibrant reds are "Red"
-                color = "Red"
-            else: # Less vibrant reds are "Pink"
-                color = "Pink"
-        # Handle Brown vs. Orange using Hue and Brightness
+            if s > 120: color = "Red"
+            else: color = "Pink"
         elif h > 10 and h <= 25:
-            if v < 180: # Darker is "Brown"
-                color = "Brown"
-            else: # Brighter is "Orange"
-                color = "Orange"
-        # Handle remaining colors with re-tuned ranges
-        elif h > 25 and h <= 40: # Expanded Yellow range
-            color = "Yellow"
-        elif h > 40 and h <= 85:
-            color = "Green"
-        elif h > 85 and h <= 130:
-            color = "Blue"
-        else:
-            color = "Unknown" # Fallback for unclassified colors like purple
+            if v < 180: color = "Brown"
+            else: color = "Orange"
+        elif h > 25 and h <= 40: color = "Yellow"
+        elif h > 40 and h <= 85: color = "Green"
+        elif h > 85 and h <= 130: color = "Blue"
+        else: color = "Unknown"
 
     return shape, color
 
@@ -97,7 +86,6 @@ def detect_on_light_bg(image, params):
     """Pipeline for light/complex backgrounds using a full color palette."""
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     
-    # DEFINITIVE FIX: Added a dedicated range for pale, low-saturation pinks.
     color_ranges = {
         'VibrantRed1': [np.array([0, 120, 70]), np.array([10, 255, 255])],
         'VibrantRed2': [np.array([165, 120, 70]), np.array([180, 255, 255])],
@@ -162,7 +150,7 @@ def detect_pills_pipeline(image, params):
 
     return annotated_image, len(detected_pills), detected_pills
 
-# --- Streamlit Web App Interface (No changes needed below this line) ---
+# --- Streamlit Web App Interface ---
 
 st.set_page_config(layout="wide")
 st.title("Intelligent Pill Detector and Identifier")
@@ -219,15 +207,25 @@ with col2:
     if st.session_state.img is not None:
         if mode == "Automatic Detection":
             annotated_image, pill_count, detected_pills = detect_pills_pipeline(st.session_state.img, params)
-            st.image(annotated_image, channels="BGR", caption=f"Found {pill_count} pill(s)")
+            
+            # --- START OF NEW, ENHANCED OUTPUT ---
+            with st.container(border=True):
+                st.metric(label="Total Pills Found", value=pill_count)
+                st.image(annotated_image, channels="BGR")
 
-            if detected_pills:
-                st.write("---")
-                st.subheader("Pill Summary")
-                df = pd.DataFrame([p for p in detected_pills if 'contour' in p])
-                if not df.empty:
+                if detected_pills:
+                    st.markdown("##### Pill Summary")
+                    df = pd.DataFrame([p for p in detected_pills if 'contour' in p])
                     summary_df = df.groupby(['shape', 'color']).size().reset_index(name='quantity')
-                    st.table(summary_df)
+                    
+                    # Add a "Total" row to the summary DataFrame
+                    total_quantity = summary_df['quantity'].sum()
+                    total_row = pd.DataFrame([{'shape': '**Total**', 'color': '', 'quantity': total_quantity}])
+                    summary_df = pd.concat([summary_df, total_row], ignore_index=True)
+                    
+                    # Display the DataFrame stretched to the container width
+                    st.dataframe(summary_df, use_container_width=True)
+            # --- END OF NEW, ENHANCED OUTPUT ---
 
         elif mode == "Manual ROI Matching":
             if st.button("Find Matching Pills"):
@@ -253,13 +251,17 @@ with col2:
                         for pill in matches:
                             x, y, w, h = cv2.boundingRect(pill['contour'])
                             cv2.rectangle(match_image, (x, y), (x+w, y+h), (0, 255, 255), 4)
-
-                        st.image(match_image, channels="BGR", caption=f"Highlighted {len(matches)} matching pill(s)")
-                        st.write("---")
-                        st.subheader("Matching Results")
-                        match_data = {
-                            'Shape': [target_shape],
-                            'Color': [target_color],
-                            'Quantity Found': [len(matches)]
-                        }
-                        st.table(pd.DataFrame(match_data))
+                        
+                        # --- START OF NEW, ENHANCED OUTPUT FOR ROI ---
+                        with st.container(border=True):
+                            st.metric(label="Total Matches Found", value=len(matches))
+                            st.image(match_image, channels="BGR")
+                            
+                            st.markdown("##### Matching Results")
+                            match_data = {
+                                'Shape': [target_shape],
+                                'Color': [target_color],
+                                'Quantity Found': [len(matches)]
+                            }
+                            st.dataframe(pd.DataFrame(match_data), use_container_width=True)
+                        # --- END OF NEW, ENHANCED OUTPUT FOR ROI ---
