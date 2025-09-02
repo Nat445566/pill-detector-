@@ -159,24 +159,20 @@ st.write("Upload an image to automatically detect pills.")
 if 'img' not in st.session_state:
     st.session_state.img = None
 
-# --- KEY CHANGE 1: Create a central column for a compact layout ---
-_, main_col, _ = st.columns([1, 2, 1]) # Use a 1:2:1 ratio for empty space on the sides
+uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
 
-with main_col:
-    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+if uploaded_file is not None:
+    pil_image = Image.open(uploaded_file).convert('RGB')
+    original_image = np.array(pil_image)
+    h, w, _ = original_image.shape
+    
+    # Resize to a more compact width for side-by-side layout
+    scale = 600 / w 
+    new_h, new_w = int(h * scale), int(w * scale)
+    resized_image = cv2.resize(original_image, (new_w, new_h))
+    st.session_state.img = cv2.cvtColor(resized_image, cv2.COLOR_RGB2BGR)
 
-    if uploaded_file is not None:
-        pil_image = Image.open(uploaded_file).convert('RGB')
-        original_image = np.array(pil_image)
-        h, w, _ = original_image.shape
-        
-        # Standardize image size for consistent processing
-        scale = 800 / w 
-        new_h, new_w = int(h * scale), int(w * scale)
-        resized_image = cv2.resize(original_image, (new_w, new_h))
-        st.session_state.img = cv2.cvtColor(resized_image, cv2.COLOR_RGB2BGR)
-
-# --- Sidebar with controls (No change) ---
+# --- Sidebar with controls ---
 with st.sidebar:
     st.title("Controls")
     mode = st.radio("Select Mode", ("Automatic Detection", "Manual ROI Matching"))
@@ -191,12 +187,12 @@ with st.sidebar:
             'max_area': max_area
         }
 
-# --- START OF NEW, CENTERED SINGLE-COLUMN LAYOUT ---
+# --- START OF NEW, COMPACT DASHBOARD LAYOUT ---
+col1, col2 = st.columns(2)
 
-# Place all main content inside the central column
-with main_col:
+with col1:
+    st.subheader("Original Image")
     if st.session_state.img is not None:
-        st.subheader("Original Image")
         if mode == "Manual ROI Matching":
             st.warning("Draw a box around a single pill to find its matches.")
             img_for_cropper = cv2.cvtColor(st.session_state.img, cv2.COLOR_BGR2RGB)
@@ -204,19 +200,24 @@ with main_col:
                                          realtime_update=True, box_color='lime', aspect_ratio=None)
             st.session_state.cropped_img = cv2.cvtColor(np.array(cropped_img_pil), cv2.COLOR_RGB2BGR)
         else:
-            # Use use_column_width='always' to make the image fit the central column
-            st.image(st.session_state.img, channels="BGR", use_column_width='always')
+            st.image(st.session_state.img, channels="BGR")
+    else:
+        st.info("Awaiting image upload.")
 
-        st.divider()
-
-        st.subheader("Detection Result")
+with col2:
+    st.subheader("Detection Result")
+    if st.session_state.img is not None:
         if mode == "Automatic Detection":
             annotated_image, pill_count, detected_pills = detect_pills_pipeline(st.session_state.img, params)
             
-            with st.container(border=True):
-                st.metric(label="Total Pills Found", value=pill_count)
-                st.image(annotated_image, channels="BGR", use_column_width='always')
+            # --- NESTED COLUMNS FOR COMPACT RESULT DISPLAY ---
+            res_col1, res_col2 = st.columns([1, 1.2]) # Give table slightly more space
 
+            with res_col1:
+                st.image(annotated_image, channels="BGR")
+
+            with res_col2:
+                st.metric(label="Total Pills Found", value=pill_count)
                 if detected_pills:
                     st.markdown("##### Pill Summary")
                     df = pd.DataFrame([p for p in detected_pills if 'contour' in p])
@@ -252,10 +253,14 @@ with main_col:
                             x, y, w, h = cv2.boundingRect(pill['contour'])
                             cv2.rectangle(match_image, (x, y), (x+w, y+h), (0, 255, 255), 4)
                         
-                        with st.container(border=True):
+                        # --- NESTED COLUMNS FOR COMPACT ROI RESULT DISPLAY ---
+                        res_col1, res_col2 = st.columns([1, 1.2])
+
+                        with res_col1:
+                            st.image(match_image, channels="BGR")
+                        
+                        with res_col2:
                             st.metric(label="Total Matches Found", value=len(matches))
-                            st.image(match_image, channels="BGR", use_column_width='always')
-                            
                             st.markdown("##### Matching Results")
                             match_data = {
                                 'Target Shape': [target_shape],
@@ -263,9 +268,3 @@ with main_col:
                                 'Quantity Found': [len(matches)]
                             }
                             st.dataframe(pd.DataFrame(match_data), use_container_width=True)
-    
-    # Message to show if no image has been uploaded yet
-    elif not uploaded_file:
-         st.info("Awaiting image upload to display results.")
-
-# --- END OF NEW, CENTERED SINGLE-COLUMN LAYOUT ---
