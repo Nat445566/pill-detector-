@@ -150,6 +150,19 @@ def detect_pills_pipeline(image, params):
 
     return annotated_image, len(detected_pills), detected_pills
 
+# --- NEW HELPER FUNCTION FOR UI ---
+def resize_for_display(image, max_height=500):
+    """
+    Resizes an image to a maximum display height while maintaining aspect ratio.
+    """
+    h, w, _ = image.shape
+    if h > max_height:
+        scale = max_height / h
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        return cv2.resize(image, (new_w, new_h))
+    return image
+
 # --- Streamlit Web App Interface ---
 
 st.set_page_config(layout="wide")
@@ -158,8 +171,8 @@ st.title("Intelligent Pill Detector and Identifier")
 if 'img' not in st.session_state:
     st.session_state.img = None
 
-# --- KEY CHANGE 1: Create a central column for a compact, centered layout ---
-_, main_col, _ = st.columns([1, 3, 1]) # Use a 1:3:1 ratio for a wider central area
+# Create a central column for a compact, centered layout
+_, main_col, _ = st.columns([1, 2, 1])
 
 with main_col:
     st.write("Upload an image to automatically detect pills.")
@@ -168,15 +181,15 @@ with main_col:
     if uploaded_file is not None:
         pil_image = Image.open(uploaded_file).convert('RGB')
         original_image = np.array(pil_image)
-        h, w, _ = original_image.shape
         
         # Standardize image size for consistent processing
+        h, w, _ = original_image.shape
         scale = 800 / w 
         new_h, new_w = int(h * scale), int(w * scale)
         resized_image = cv2.resize(original_image, (new_w, new_h))
         st.session_state.img = cv2.cvtColor(resized_image, cv2.COLOR_RGB2BGR)
 
-# --- Sidebar with controls (No change) ---
+# --- Sidebar with controls ---
 with st.sidebar:
     st.title("Controls")
     mode = st.radio("Select Mode", ("Automatic Detection", "Manual ROI Matching"))
@@ -191,20 +204,23 @@ with st.sidebar:
             'max_area': max_area
         }
 
-# --- START OF NEW, CENTERED "REPORT STYLE" LAYOUT ---
+# --- Centered, "Report Style" Layout ---
 
-# Place all main content inside the central column
 with main_col:
     if st.session_state.img is not None:
         st.subheader("Original Image")
         if mode == "Manual ROI Matching":
             st.warning("Draw a box around a single pill to find its matches.")
-            img_for_cropper = cv2.cvtColor(st.session_state.img, cv2.COLOR_BGR2RGB)
+            # Resize for display BEFORE passing to cropper to ensure it's not too large
+            display_img_resized = resize_for_display(st.session_state.img)
+            img_for_cropper = cv2.cvtColor(display_img_resized, cv2.COLOR_BGR2RGB)
             cropped_img_pil = st_cropper(Image.fromarray(img_for_cropper),
                                          realtime_update=True, box_color='lime', aspect_ratio=None)
             st.session_state.cropped_img = cv2.cvtColor(np.array(cropped_img_pil), cv2.COLOR_RGB2BGR)
         else:
-            st.image(st.session_state.img, channels="BGR", use_column_width='always')
+            # Apply the resize function before displaying the image
+            display_img_resized = resize_for_display(st.session_state.img)
+            st.image(display_img_resized, channels="BGR", use_container_width=True)
 
         st.divider()
 
@@ -212,8 +228,11 @@ with main_col:
         if mode == "Automatic Detection":
             annotated_image, pill_count, detected_pills = detect_pills_pipeline(st.session_state.img, params)
             
+            # Apply the resize function to the annotated image as well
+            display_annotated_resized = resize_for_display(annotated_image)
+
             st.metric(label="Total Pills Found", value=pill_count)
-            st.image(annotated_image, channels="BGR", use_column_width='always')
+            st.image(display_annotated_resized, channels="BGR", use_container_width=True)
 
             if detected_pills:
                 st.markdown("##### Pill Summary")
@@ -250,8 +269,11 @@ with main_col:
                             x, y, w, h = cv2.boundingRect(pill['contour'])
                             cv2.rectangle(match_image, (x, y), (x+w, y+h), (0, 255, 255), 4)
                         
+                        # Apply the resize function to the match image
+                        display_match_resized = resize_for_display(match_image)
+
                         st.metric(label="Total Matches Found", value=len(matches))
-                        st.image(match_image, channels="BGR", use_column_width='always')
+                        st.image(display_match_resized, channels="BGR", use_container_width=True)
                         
                         st.markdown("##### Matching Results")
                         match_data = {
@@ -261,8 +283,5 @@ with main_col:
                         }
                         st.dataframe(pd.DataFrame(match_data), use_container_width=True)
     
-    # Message to show if no image has been uploaded yet
     elif not uploaded_file:
          st.info("Awaiting image upload to display results.")
-
-# --- END OF NEW, CENTERED "REPORT STYLE" LAYOUT ---
