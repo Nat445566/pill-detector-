@@ -153,7 +153,7 @@ def detect_pills_pipeline(image, params):
 # --- Streamlit Web App Interface ---
 
 st.set_page_config(layout="wide")
-st.title("Intelligent Pill Detector and Identifier")
+st.title("Automated Pharmaceutical Tablet Counting System")
 st.write("Upload an image to automatically detect pills.")
 
 if 'img' not in st.session_state:
@@ -165,12 +165,13 @@ if uploaded_file is not None:
     pil_image = Image.open(uploaded_file).convert('RGB')
     original_image = np.array(pil_image)
     h, w, _ = original_image.shape
-    scale = 800 / w
+    
+    # --- KEY CHANGE 1: Resize to a smaller width for a more compact layout ---
+    scale = 600 / w  # Changed from 800 to 600
     new_h, new_w = int(h * scale), int(w * scale)
     resized_image = cv2.resize(original_image, (new_w, new_h))
     st.session_state.img = cv2.cvtColor(resized_image, cv2.COLOR_RGB2BGR)
 
-# --- Sidebar with controls ---
 with st.sidebar:
     st.title("Controls")
     mode = st.radio("Select Mode", ("Automatic Detection", "Manual ROI Matching"))
@@ -185,81 +186,77 @@ with st.sidebar:
             'max_area': max_area
         }
 
-# --- START OF NEW, SINGLE-COLUMN LAYOUT ---
+col1, col2 = st.columns(2)
 
-# Display Original Image / ROI Cropper
-st.subheader("Original Image")
-if st.session_state.img is not None:
-    if mode == "Manual ROI Matching":
-        st.warning("Draw a box around a single pill to find its matches.")
-        # The cropper takes the full width, which is perfect for this layout
-        img_for_cropper = cv2.cvtColor(st.session_state.img, cv2.COLOR_BGR2RGB)
-        cropped_img_pil = st_cropper(Image.fromarray(img_for_cropper),
-                                     realtime_update=True, box_color='lime', aspect_ratio=None)
-        st.session_state.cropped_img = cv2.cvtColor(np.array(cropped_img_pil), cv2.COLOR_RGB2BGR)
+with col1:
+    st.subheader("Original Image")
+    if st.session_state.img is not None:
+        if mode == "Manual ROI Matching":
+            st.warning("Draw a box around a single pill to find its matches.")
+            img_for_cropper = cv2.cvtColor(st.session_state.img, cv2.COLOR_BGR2RGB)
+            cropped_img_pil = st_cropper(Image.fromarray(img_for_cropper),
+                                         realtime_update=True, box_color='lime', aspect_ratio=None)
+            st.session_state.cropped_img = cv2.cvtColor(np.array(cropped_img_pil), cv2.COLOR_RGB2BGR)
+        else:
+            # Removed use_column_width to respect the resized image dimensions
+            st.image(st.session_state.img, channels="BGR")
     else:
-        st.image(st.session_state.img, channels="BGR", use_column_width='always')
-else:
-    st.info("Awaiting image upload.")
+        st.info("Awaiting image upload.")
 
-# Add a visual separator
-st.divider()
+with col2:
+    st.subheader("Detection Result")
+    if st.session_state.img is not None:
+        if mode == "Automatic Detection":
+            annotated_image, pill_count, detected_pills = detect_pills_pipeline(st.session_state.img, params)
+            
+            with st.container(border=True):
+                st.metric(label="Total Pills Found", value=pill_count)
+                # Removed use_column_width to keep images compact
+                st.image(annotated_image, channels="BGR")
 
-# Display Detection Result
-st.subheader("Detection Result")
-if st.session_state.img is not None:
-    if mode == "Automatic Detection":
-        # Only run the detection if an image is present
-        annotated_image, pill_count, detected_pills = detect_pills_pipeline(st.session_state.img, params)
-        
-        with st.container(border=True):
-            st.metric(label="Total Pills Found", value=pill_count)
-            st.image(annotated_image, channels="BGR", use_column_width='always')
-
-            if detected_pills:
-                st.markdown("##### Pill Summary")
-                df = pd.DataFrame([p for p in detected_pills if 'contour' in p])
-                summary_df = df.groupby(['shape', 'color']).size().reset_index(name='quantity')
-                
-                total_quantity = summary_df['quantity'].sum()
-                total_row = pd.DataFrame([{'shape': '**Total**', 'color': '', 'quantity': total_quantity}])
-                summary_df = pd.concat([summary_df, total_row], ignore_index=True)
-                
-                st.dataframe(summary_df, use_container_width=True)
-
-    elif mode == "Manual ROI Matching":
-        # Only show the button if an image has been uploaded
-        if st.button("Find Matching Pills"):
-            cropped_img_cv = st.session_state.get('cropped_img')
-            if cropped_img_cv is None or cropped_img_cv.size == 0:
-                st.error("Please draw a box on the image above first.")
-            else:
-                roi_params = {'min_area': 100, 'max_area': cropped_img_cv.shape[0] * cropped_img_cv.shape[1]}
-                _, _, pills_in_roi = detect_pills_pipeline(cropped_img_cv, roi_params)
-
-                if not pills_in_roi:
-                    st.error("Could not detect a pill in the selected ROI. Try drawing a tighter box.")
-                else:
-                    target_pill = pills_in_roi[0]
-                    target_shape = target_pill['shape']
-                    target_color = target_pill['color']
-
-                    _, _, all_pills = detect_pills_pipeline(st.session_state.img, params)
-                    matches = [p for p in all_pills if p['shape'] == target_shape and p['color'] == target_color]
-
-                    match_image = st.session_state.img.copy()
-                    for pill in matches:
-                        x, y, w, h = cv2.boundingRect(pill['contour'])
-                        cv2.rectangle(match_image, (x, y), (x+w, y+h), (0, 255, 255), 4)
+                if detected_pills:
+                    st.markdown("##### Pill Summary")
+                    df = pd.DataFrame([p for p in detected_pills if 'contour' in p])
+                    summary_df = df.groupby(['shape', 'color']).size().reset_index(name='quantity')
                     
-                    with st.container(border=True):
-                        st.metric(label="Total Matches Found", value=len(matches))
-                        st.image(match_image, channels="BGR", use_column_width='always')
+                    total_quantity = summary_df['quantity'].sum()
+                    total_row = pd.DataFrame([{'shape': '**Total**', 'color': '', 'quantity': total_quantity}])
+                    summary_df = pd.concat([summary_df, total_row], ignore_index=True)
+                    
+                    st.dataframe(summary_df, use_container_width=True)
+
+        elif mode == "Manual ROI Matching":
+            if st.button("Find Matching Pills"):
+                cropped_img_cv = st.session_state.get('cropped_img')
+                if cropped_img_cv is None or cropped_img_cv.size == 0:
+                    st.error("Please draw a box on the image above first.")
+                else:
+                    roi_params = {'min_area': 100, 'max_area': cropped_img_cv.shape[0] * cropped_img_cv.shape[1]}
+                    _, _, pills_in_roi = detect_pills_pipeline(cropped_img_cv, roi_params)
+
+                    if not pills_in_roi:
+                        st.error("Could not detect a pill in the selected ROI.")
+                    else:
+                        target_pill = pills_in_roi[0]
+                        target_shape = target_pill['shape']
+                        target_color = target_pill['color']
+
+                        _, _, all_pills = detect_pills_pipeline(st.session_state.img, params)
+                        matches = [p for p in all_pills if p['shape'] == target_shape and p['color'] == target_color]
+
+                        match_image = st.session_state.img.copy()
+                        for pill in matches:
+                            x, y, w, h = cv2.boundingRect(pill['contour'])
+                            cv2.rectangle(match_image, (x, y), (x+w, y+h), (0, 255, 255), 4)
                         
-                        st.markdown("##### Matching Results")
-                        match_data = {
-                            'Target Shape': [target_shape],
-                            'Target Color': [target_color],
-                            'Quantity Found': [len(matches)]
-                        }
-                        st.dataframe(pd.DataFrame(match_data), use_container_width=True)
+                        with st.container(border=True):
+                            st.metric(label="Total Matches Found", value=len(matches))
+                            st.image(match_image, channels="BGR")
+                            
+                            st.markdown("##### Matching Results")
+                            match_data = {
+                                'Target Shape': [target_shape],
+                                'Target Color': [target_color],
+                                'Quantity Found': [len(matches)]
+                            }
+                            st.dataframe(pd.DataFrame(match_data), use_container_width=True)
