@@ -150,8 +150,8 @@ def detect_pills_pipeline(image, params):
 
     return annotated_image, len(detected_pills), detected_pills
 
-# --- NEW HELPER FUNCTION FOR UI ---
-def resize_for_display(image, max_height=500):
+# --- UI Helper Function ---
+def resize_for_display(image, max_height=400): # <<< KEY CHANGE: Lowered from 500 to 400
     """
     Resizes an image to a maximum display height while maintaining aspect ratio.
     """
@@ -171,7 +171,6 @@ st.title("Intelligent Pill Detector and Identifier")
 if 'img' not in st.session_state:
     st.session_state.img = None
 
-# Create a central column for a compact, centered layout
 _, main_col, _ = st.columns([1, 2, 1])
 
 with main_col:
@@ -182,7 +181,6 @@ with main_col:
         pil_image = Image.open(uploaded_file).convert('RGB')
         original_image = np.array(pil_image)
         
-        # Standardize image size for consistent processing
         h, w, _ = original_image.shape
         scale = 800 / w 
         new_h, new_w = int(h * scale), int(w * scale)
@@ -211,14 +209,12 @@ with main_col:
         st.subheader("Original Image")
         if mode == "Manual ROI Matching":
             st.warning("Draw a box around a single pill to find its matches.")
-            # Resize for display BEFORE passing to cropper to ensure it's not too large
             display_img_resized = resize_for_display(st.session_state.img)
             img_for_cropper = cv2.cvtColor(display_img_resized, cv2.COLOR_BGR2RGB)
             cropped_img_pil = st_cropper(Image.fromarray(img_for_cropper),
                                          realtime_update=True, box_color='lime', aspect_ratio=None)
             st.session_state.cropped_img = cv2.cvtColor(np.array(cropped_img_pil), cv2.COLOR_RGB2BGR)
         else:
-            # Apply the resize function before displaying the image
             display_img_resized = resize_for_display(st.session_state.img)
             st.image(display_img_resized, channels="BGR", use_container_width=True)
 
@@ -227,8 +223,6 @@ with main_col:
         st.subheader("Detection Result")
         if mode == "Automatic Detection":
             annotated_image, pill_count, detected_pills = detect_pills_pipeline(st.session_state.img, params)
-            
-            # Apply the resize function to the annotated image as well
             display_annotated_resized = resize_for_display(annotated_image)
 
             st.metric(label="Total Pills Found", value=pill_count)
@@ -269,7 +263,6 @@ with main_col:
                             x, y, w, h = cv2.boundingRect(pill['contour'])
                             cv2.rectangle(match_image, (x, y), (x+w, y+h), (0, 255, 255), 4)
                         
-                        # Apply the resize function to the match image
                         display_match_resized = resize_for_display(match_image)
 
                         st.metric(label="Total Matches Found", value=len(matches))
