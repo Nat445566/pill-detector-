@@ -85,14 +85,16 @@ def get_contours_adaptive_color(image, params):
 
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
     cleaned_mask = cv2.morphologyEx(final_mask, cv2.MORPH_CLOSE, kernel, iterations=3)
-    return cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+    contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return contours
 
 def get_contours_canny(image, params):
     """Generates contours using Canny edge detection."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (7, 7), 0)
     edges = cv2.Canny(blurred, params['canny_thresh1'], params['canny_thresh2'])
-    return cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return contours
 
 def get_contours_watershed(image, params):
     """Generates contours by separating touching objects with Watershed."""
@@ -133,14 +135,15 @@ def find_feature_match(image, template):
     orb = cv2.ORB_create(nfeatures=1000)
     kp1, des1 = orb.detectAndCompute(template_gray, None)
     kp2, des2 = orb.detectAndCompute(main_gray, None)
-    if des1 is None or des2 is None: return None
-    flann = cv2.FlannBasedMatcher(dict(algorithm=6), dict(checks=50))
+    if des1 is None or des2 is None or len(des1) < 2 or len(des2) < 2: return None
+    flann = cv2.FlannBasedMatcher(dict(algorithm=6, table_number=6, key_size=12, multi_probe_level=1), dict(checks=50))
     matches = flann.knnMatch(des1, des2, k=2)
     good = [m for pair in matches if len(pair) == 2 for m, n in [pair] if m.distance < 0.75 * n.distance]
     if len(good) > 10:
         src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
         dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
         M, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+        if M is None: return None
         h, w = template_gray.shape
         pts = np.float32([[0, 0], [0, h-1], [w-1, h-1], [w-1, 0]]).reshape(-1, 1, 2)
         return np.int32(cv2.perspectiveTransform(pts, M))
@@ -196,6 +199,7 @@ with main_col:
         # --- Display Area and ROI Cropper ---
         if analysis_mode == "Manual ROI (Matching Pills)":
             st.warning("Draw a box on the image to define the target pill for matching.")
+            # *** FIX: The cropper returns the cropped PIL image, not an object with a .box attribute ***
             cropped_pil = st_cropper(Image.fromarray(cv2.cvtColor(st.session_state.img, cv2.COLOR_BGR2RGB)), realtime_update=True, box_color='lime')
         else:
             st.image(st.session_state.img, channels="BGR", caption="Full image ready for analysis.")
@@ -226,12 +230,13 @@ with main_col:
 
         elif analysis_mode == "Manual ROI (Matching Pills)":
             if st.button("Find All Matching Pills", use_container_width=True):
-                box = cropped_pil.box
-                roi = st.session_state.img[box[1]:box[3], box[0]:box[2]]
+                # *** FIX: Convert the returned PIL image to an OpenCV image ***
+                roi = cv2.cvtColor(np.array(cropped_pil), cv2.COLOR_RGB2BGR)
                 if roi.size < 100:
                     st.error("Please draw a valid box on the image.")
                 else:
                     with st.spinner("Finding matches..."):
+                        # --- Logic for Contour-Based Matching (Your Original Method) ---
                         if is_contour_detector:
                             roi_contours = detector_options[detector_name](roi, params)
                             target_pills = filter_and_classify_pills(roi, roi_contours, params)
@@ -252,15 +257,19 @@ with main_col:
                                 st.metric(f"Found {len(matches)} matches for:", f"{target['shape']}, {target['color']}")
                                 st.image(annotated_image, channels="BGR")
 
+                        # --- Logic for Template-Based Matching ---
                         elif is_template_detector:
                             annotated_image = st.session_state.img.copy()
+                            template = roi # The cropped region is the template
+                            
                             if detector_name == "Template Matching":
-                                matches = find_template_matches(st.session_state.img, roi, params)
+                                matches = find_template_matches(st.session_state.img, template, params)
                                 for (x, y, w, h) in matches:
                                     cv2.rectangle(annotated_image, (x, y), (x+w, y+h), (255,0,0), 3)
                                 st.metric("Template Matches Found", len(matches))
+                            
                             elif detector_name == "Feature-Based Matching":
-                                match_poly = find_feature_match(st.session_state.img, roi)
+                                match_poly = find_feature_match(st.session_state.img, template)
                                 if match_poly is not None:
                                     cv2.polylines(annotated_image, [match_poly], True, (255,0,255), 3)
                                     st.metric("Feature Match Found", 1)
