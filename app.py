@@ -5,276 +5,268 @@ from PIL import Image
 from streamlit_cropper import st_cropper
 import pandas as pd
 
-# --- Core Image Processing & Analysis Functions ---
-
+# --- [Unchanged] Core Helper Function: Get Pill Properties ---
 def get_pill_properties(image_bgr, contour):
-    """
-    A definitive, hierarchical classifier for shape and color, robust to lighting changes.
-    """
-    # --- Shape Analysis ---
+    """A definitive, hierarchical classifier for shape and color."""
+    # Shape Analysis
     area = cv2.contourArea(contour)
     perimeter = cv2.arcLength(contour, True)
     shape = "Unknown"
     if perimeter > 0:
         epsilon = 0.04 * perimeter
         approx = cv2.approxPolyDP(contour, epsilon, True)
-        num_vertices = len(approx)
         circularity = 4 * np.pi * (area / (perimeter * perimeter))
         _, (w, h), _ = cv2.minAreaRect(contour)
         aspect_ratio = max(w, h) / min(w, h) if min(w, h) > 0 else 0
         if circularity > 0.82 and aspect_ratio < 1.4: shape = "Round"
         elif aspect_ratio > 2.0: shape = "Capsule"
-        elif num_vertices == 4: shape = "Rectangular"
+        elif len(approx) == 4: shape = "Rectangular"
         else: shape = "Oval"
 
-    # --- HIERARCHICAL COLOR ANALYSIS ---
+    # Color Analysis
     mask = np.zeros(image_bgr.shape[:2], dtype="uint8")
     cv2.drawContours(mask, [contour], -1, 255, -1)
-    kernel = np.ones((3,3), np.uint8)
-    eroded_mask = cv2.erode(mask, kernel, iterations=2)
+    eroded_mask = cv2.erode(mask, np.ones((3,3), np.uint8), iterations=2)
     image_hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     mean_hsv = cv2.mean(image_hsv, mask=eroded_mask)[:3]
     h, s, v = mean_hsv
-
-    # 1. First, classify achromatic colors (White, Gray, Black).
     if s < 45:
         if v > 150: color = "White"
         elif v < 70: color = "Black"
         else: color = "Gray"
-    # 2. If it's a chromatic color, then check the Hue.
     else:
-        if (h <= 10 or h >= 165):
-            if s > 120: color = "Red"
-            else: color = "Pink"
-        elif h > 10 and h <= 25:
-            if v < 180: color = "Brown"
-            else: color = "Orange"
-        elif h > 25 and h <= 40: color = "Yellow"
-        elif h > 40 and h <= 85: color = "Green"
-        elif h > 85 and h <= 130: color = "Blue"
+        if (h <= 10 or h >= 165): color = "Red" if s > 120 else "Pink"
+        elif h <= 25: color = "Brown" if v < 180 else "Orange"
+        elif h <= 40: color = "Yellow"
+        elif h <= 85: color = "Green"
+        elif h <= 130: color = "Blue"
         else: color = "Unknown"
-
     return shape, color
 
-def is_background_light(image):
-    """Analyzes image corners to determine if the background is light or dark."""
-    h, w, _ = image.shape
-    corner_size = int(min(h, w) * 0.1)
-    corners = [
-        image[0:corner_size, 0:corner_size],
-        image[0:corner_size, w-corner_size:w],
-        image[h-corner_size:h, 0:corner_size],
-        image[h-corner_size:h, w-corner_size:w]
-    ]
-    avg_brightness = np.mean([cv2.cvtColor(c, cv2.COLOR_BGR2GRAY).mean() for c in corners])
-    return avg_brightness > 120
+# --- Detector 1: Contour-Based (Your Original Algorithm) ---
+def detect_pills_adaptive_color(image, params):
+    # Helper for background check
+    def is_background_light(img):
+        h, w, _ = img.shape
+        corner_size = int(min(h, w) * 0.1)
+        corners = [
+            img[0:corner_size, 0:corner_size], img[0:corner_size, w-corner_size:w],
+            img[h-corner_size:h, 0:corner_size], img[h-corner_size:h, w-corner_size:w]
+        ]
+        return np.mean([cv2.cvtColor(c, cv2.COLOR_BGR2GRAY).mean() for c in corners]) > 120
 
-def detect_on_dark_bg(image, params):
-    """Pipeline optimized for dark backgrounds using LAB color space."""
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    l_channel, _, _ = cv2.split(lab)
-    blurred_l = cv2.GaussianBlur(l_channel, (5, 5), 0)
-    _, thresh = cv2.threshold(blurred_l, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    
-    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    closed_mask = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, close_kernel, iterations=3)
-    opened_mask = cv2.morphologyEx(closed_mask, cv2.MORPH_OPEN, open_kernel, iterations=2)
-    return opened_mask
-
-def detect_on_light_bg(image, params):
-    """Pipeline for light/complex backgrounds using a full color palette."""
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    
-    color_ranges = {
-        'VibrantRed1': [np.array([0, 120, 70]), np.array([10, 255, 255])],
-        'VibrantRed2': [np.array([165, 120, 70]), np.array([180, 255, 255])],
-        'PalePink1': [np.array([0, 40, 100]), np.array([10, 119, 255])],
-        'PalePink2': [np.array([165, 40, 100]), np.array([180, 119, 255])],
-        'BrownOrange': [np.array([11, 50, 50]), np.array([25, 255, 255])],
-        'Yellow': [np.array([26, 40, 50]), np.array([40, 255, 255])],
-        'Green': [np.array([41, 40, 50]), np.array([85, 255, 255])],
-        'Blue': [np.array([86, 50, 50]), np.array([130, 255, 255])],
-    }
-
-    combined_mask = np.zeros(hsv.shape[:2], dtype="uint8")
-    for lower, upper in color_ranges.values():
-        mask = cv2.inRange(hsv, lower, upper)
-        combined_mask = cv2.bitwise_or(combined_mask, mask)
-
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, white_thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
-    dilated_white = cv2.dilate(white_thresh, np.ones((3,3), np.uint8), iterations=2)
-    combined_mask = cv2.bitwise_or(combined_mask, dilated_white)
-
-    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    closed_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, close_kernel, iterations=3)
-    opened_mask = cv2.morphologyEx(closed_mask, cv2.MORPH_OPEN, open_kernel, iterations=2)
-    return opened_mask
-
-def detect_pills_pipeline(image, params):
-    """Master adaptive pipeline."""
-    annotated_image = image.copy()
-    
+    # Main detection logic
     if is_background_light(image):
-        final_mask = detect_on_light_bg(image, params)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        _, final_mask = cv2.threshold(blurred, 200, 255, cv2.THRESH_BINARY_INV)
     else:
-        final_mask = detect_on_dark_bg(image, params)
-        
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        l, _, _ = cv2.split(lab)
+        blurred = cv2.GaussianBlur(l, (5, 5), 0)
+        _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        final_mask = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, np.ones((5,5),np.uint8), iterations=3)
+
     contours, _ = cv2.findContours(final_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return contours
+
+# --- Detector 2: Edge-Based (Canny) Detection ---
+def detect_pills_canny(image, params):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+    edges = cv2.Canny(blurred, params['canny_thresh1'], params['canny_thresh2'])
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return contours
+
+# --- Detector 3: Watershed Segmentation ---
+def detect_pills_watershed(image, params):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    kernel = np.ones((3, 3), np.uint8)
+    opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
+    sure_bg = cv2.dilate(opening, kernel, iterations=3)
+    dist_transform = cv2.distanceTransform(opening, cv2.DIST_L2, 5)
+    _, sure_fg = cv2.threshold(dist_transform, 0.5 * dist_transform.max(), 255, 0)
+    markers = cv2.watershed(image, cv2.connectedComponents(np.uint8(sure_fg))[1] + 1)
     
-    detected_pills = []
-    for c in contours:
-        area = cv2.contourArea(c)
-        if not (params['min_area'] < area < params['max_area']):
-            continue
+    # Extract contours from the segmented regions
+    all_contours = []
+    for label in np.unique(markers):
+        if label <= 1: continue
+        mask = np.zeros(gray.shape, dtype="uint8")
+        mask[markers == label] = 255
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        all_contours.extend(contours)
+    return all_contours
 
-        hull = cv2.convexHull(c)
-        if hull.shape[0] < 3: continue
-        solidity = float(area) / cv2.contourArea(hull)
-        if solidity < 0.9:
-            continue
+# --- Detector 4: Template Matching ---
+def find_template_matches(image, template, params):
+    if template.size == 0: return []
+    main_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+    w, h = template_gray.shape[::-1]
+    res = cv2.matchTemplate(main_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+    loc = np.where(res >= params['match_threshold'])
+    rects = [[int(pt[0]), int(pt[1]), int(w), int(h)] for pt in zip(*loc[::-1])]
+    rects, _ = cv2.groupRectangles(rects * 2, 1, 0.2)
+    return rects
 
-        shape, color = get_pill_properties(image, c)
-        if color == "Unknown" or shape == "Unknown":
-            continue
+# --- Detector 5: Feature-Based Matching ---
+def find_feature_match(image, template):
+    if template.size == 0: return None
+    main_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+    orb = cv2.ORB_create(nfeatures=1000)
+    kp1, des1 = orb.detectAndCompute(template_gray, None)
+    kp2, des2 = orb.detectAndCompute(main_gray, None)
+    if des1 is None or des2 is None: return None
+    index_params= dict(algorithm = 6, table_number = 6, key_size = 12, multi_probe_level = 1)
+    search_params = dict(checks=50)
+    flann = cv2.FlannBasedMatcher(index_params, search_params)
+    matches = flann.knnMatch(des1, des2, k=2)
+    good = [m for pair in matches if len(pair) == 2 for m, n in [pair] if m.distance < 0.75 * n.distance]
+    if len(good) > 10:
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+        M, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+        h, w = template_gray.shape
+        pts = np.float32([[0, 0], [0, h-1], [w-1, h-1], [w-1, 0]]).reshape(-1, 1, 2)
+        return np.int32(cv2.perspectiveTransform(pts, M))
+    return None
 
-        detected_pills.append({'shape': shape, 'color': color, 'contour': c})
-
-    for pill in detected_pills:
-        x, y, w, h = cv2.boundingRect(pill['contour'])
-        cv2.rectangle(annotated_image, (x, y), (x + w, y + h), (0, 255, 0), 3)
-        label_text = f"{pill['shape']}, {pill['color']}"
-        cv2.putText(annotated_image, label_text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-
-    return annotated_image, len(detected_pills), detected_pills
-
-# --- UI Helper Function ---
-def resize_for_display(image, max_height=400): # <<< KEY CHANGE: Lowered from 500 to 400
-    """
-    Resizes an image to a maximum display height while maintaining aspect ratio.
-    """
-    h, w, _ = image.shape
+# --- UI Helper ---
+def resize_for_display(image, max_height=400):
+    h, w = image.shape[:2]
     if h > max_height:
         scale = max_height / h
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        return cv2.resize(image, (new_w, new_h))
+        return cv2.resize(image, (int(w * scale), int(h * scale)))
     return image
 
-# --- Streamlit Web App Interface ---
-
+# --- Streamlit App ---
 st.set_page_config(layout="wide")
-st.title("Automated Pharmaceutical Tablet Counting System")
+st.title("Pharmaceutical Tablet Analysis System")
 
+# Initialize session state
 if 'img' not in st.session_state:
     st.session_state.img = None
 
-_, main_col, _ = st.columns([1, 2, 1])
+# --- Sidebar Controls ---
+with st.sidebar:
+    st.title("⚙️ Controls")
+    
+    detector_options = {
+        "Contour-Based (Adaptive Color)": detect_pills_adaptive_color,
+        "Edge-Based (Canny)": detect_pills_canny,
+        "Watershed Segmentation": detect_pills_watershed,
+        "Template Matching": find_template_matches,
+        "Feature-Based Matching": find_feature_match
+    }
+    detector_name = st.selectbox("1. Select Detector Algorithm", detector_options.keys())
+    
+    analysis_mode = st.radio("2. Select Analysis Mode", ("Full Image Detection", "Manual ROI Matching"))
 
+    with st.expander("🔬 Tuning & Advanced Options"):
+        min_area = st.slider("Min Pill Area", 50, 5000, 500)
+        max_area = st.slider("Max Pill Area", 5000, 100000, 50000)
+        params = {'min_area': min_area, 'max_area': max_area}
+        if detector_name == "Edge-Based (Canny)":
+            params['canny_thresh1'] = st.slider("Canny Threshold 1", 0, 255, 30)
+            params['canny_thresh2'] = st.slider("Canny Threshold 2", 0, 255, 150)
+        if detector_name == "Template Matching":
+            params['match_threshold'] = st.slider("Match Confidence", 0.5, 1.0, 0.8)
+
+# --- Main Page Layout ---
+_, main_col, _ = st.columns([1, 2, 1])
 with main_col:
-    st.write("Upload an image to automatically detect pills.")
+    st.write("Upload an image, then select your desired algorithm and analysis mode from the sidebar.")
     uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
 
-    if uploaded_file is not None:
-        pil_image = Image.open(uploaded_file).convert('RGB')
-        original_image = np.array(pil_image)
-        
-        h, w, _ = original_image.shape
-        scale = 800 / w 
-        new_h, new_w = int(h * scale), int(w * scale)
-        resized_image = cv2.resize(original_image, (new_w, new_h))
-        st.session_state.img = cv2.cvtColor(resized_image, cv2.COLOR_RGB2BGR)
+    if uploaded_file:
+        pil_img = Image.open(uploaded_file).convert('RGB')
+        # Standard preprocessing: resize to a consistent width
+        orig_img = np.array(pil_img)
+        scale = 800 / orig_img.shape[1]
+        new_size = (int(orig_img.shape[1] * scale), int(orig_img.shape[0] * scale))
+        st.session_state.img = cv2.cvtColor(cv2.resize(orig_img, new_size), cv2.COLOR_RGB2BGR)
 
-# --- Sidebar with controls ---
-with st.sidebar:
-    st.title("Controls")
-    mode = st.radio("Select Mode", ("Automatic Detection", "Manual ROI Matching"))
-
-    with st.expander("Manual Tuning & Advanced Options"):
-        st.write("Adjust these sliders if detection is not perfect.")
-        min_area = st.slider("Min Area", 50, 5000, 100)
-        max_area = st.slider("Max Area", 5000, 100000, 50000)
-
-        params = {
-            'min_area': min_area,
-            'max_area': max_area
-        }
-
-# --- Centered, "Report Style" Layout ---
-
-with main_col:
     if st.session_state.img is not None:
-        st.subheader("Original Image")
-        if mode == "Manual ROI Matching":
-            st.warning("Draw a box around a single pill to find its matches.")
+        # --- Display Area ---
+        st.subheader("Image Analysis")
+        image_to_process = st.session_state.img
+        
+        # In ROI mode, activate the cropper
+        if analysis_mode == "Manual ROI Matching":
+            st.info("Draw a box on the image below to define your Region of Interest (ROI).")
             display_img_resized = resize_for_display(st.session_state.img)
             img_for_cropper = cv2.cvtColor(display_img_resized, cv2.COLOR_BGR2RGB)
-            cropped_img_pil = st_cropper(Image.fromarray(img_for_cropper),
-                                         realtime_update=True, box_color='lime', aspect_ratio=None)
-            st.session_state.cropped_img = cv2.cvtColor(np.array(cropped_img_pil), cv2.COLOR_RGB2BGR)
+            cropped_pil = st_cropper(Image.fromarray(img_for_cropper), realtime_update=True, box_color='lime')
+            cropped_cv = cv2.cvtColor(np.array(cropped_pil), cv2.COLOR_RGB2BGR)
+            # Rescale cropped coordinates back to original image size
+            h_disp, w_disp = display_img_resized.shape[:2]
+            h_orig, w_orig = st.session_state.img.shape[:2]
+            scale_h, scale_w = h_orig / h_disp, w_orig / w_disp
+            (x,y,w,h) = (cropped_pil.box[0]*scale_w, cropped_pil.box[1]*scale_h, cropped_pil.box[2]*scale_w, cropped_pil.box[3]*scale_h)
+            image_to_process = st.session_state.img[int(y):int(y+h), int(x):int(x+w)]
         else:
-            display_img_resized = resize_for_display(st.session_state.img)
-            st.image(display_img_resized, channels="BGR", use_container_width=True)
+            st.image(resize_for_display(st.session_state.img), channels="BGR", caption="Full image ready for analysis.")
 
         st.divider()
 
-        st.subheader("Detection Result")
-        if mode == "Automatic Detection":
-            annotated_image, pill_count, detected_pills = detect_pills_pipeline(st.session_state.img, params)
-            display_annotated_resized = resize_for_display(annotated_image)
+        # --- Execution and Results ---
+        button_label = "Run Analysis"
+        if analysis_mode == "Manual ROI Matching":
+             button_label = "Analyze Selected ROI"
+        
+        is_template_detector = detector_name in ["Template Matching", "Feature-Based Matching"]
+        if is_template_detector:
+             button_label = f"Find Matches Using ROI as Template"
 
-            st.metric(label="Total Pills Found", value=pill_count)
-            st.image(display_annotated_resized, channels="BGR", use_container_width=True)
-
-            if detected_pills:
-                st.markdown("##### Pill Summary")
-                df = pd.DataFrame([p for p in detected_pills if 'contour' in p])
-                summary_df = df.groupby(['shape', 'color']).size().reset_index(name='quantity')
+        if st.button(button_label, use_container_width=True):
+            with st.spinner("Processing..."):
+                annotated_image = image_to_process.copy()
+                pill_count = 0
                 
-                total_quantity = summary_df['quantity'].sum()
-                total_row = pd.DataFrame([{'shape': '**Total**', 'color': '', 'quantity': total_quantity}])
-                summary_df = pd.concat([summary_df, total_row], ignore_index=True)
-                
-                st.dataframe(summary_df, use_container_width=True)
+                # Logic for contour-based detectors
+                if detector_name in ["Contour-Based (Adaptive Color)", "Edge-Based (Canny)", "Watershed Segmentation"]:
+                    contours = detector_options[detector_name](image_to_process, params)
+                    detected_pills = []
+                    for c in contours:
+                        area = cv2.contourArea(c)
+                        if params['min_area'] < area < params['max_area']:
+                             shape, color = get_pill_properties(image_to_process, c)
+                             detected_pills.append({'shape': shape, 'color': color, 'contour': c})
+                             x, y, w, h = cv2.boundingRect(c)
+                             cv2.rectangle(annotated_image, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                    
+                    pill_count = len(detected_pills)
+                    st.metric(f"Pills Found in {'ROI' if analysis_mode == 'Manual ROI Matching' else 'Full Image'}", pill_count)
+                    st.image(resize_for_display(annotated_image), channels="BGR", caption=f"Result from {detector_name}")
+                    if detected_pills:
+                        df = pd.DataFrame(detected_pills).drop(columns='contour')
+                        summary_df = df.groupby(['shape', 'color']).size().reset_index(name='quantity')
+                        st.dataframe(summary_df, use_container_width=True)
 
-        elif mode == "Manual ROI Matching":
-            if st.button("Find Matching Pills"):
-                cropped_img_cv = st.session_state.get('cropped_img')
-                if cropped_img_cv is None or cropped_img_cv.size == 0:
-                    st.error("Please draw a box on the image above first.")
-                else:
-                    roi_params = {'min_area': 100, 'max_area': cropped_img_cv.shape[0] * cropped_img_cv.shape[1]}
-                    _, _, pills_in_roi = detect_pills_pipeline(cropped_img_cv, roi_params)
-
-                    if not pills_in_roi:
-                        st.error("Could not detect a pill in the selected ROI.")
+                # Logic for template-based detectors (always use ROI as template, search full image)
+                elif is_template_detector:
+                    if analysis_mode != "Manual ROI Matching" or image_to_process.size == 0:
+                        st.error("Please select 'Manual ROI Matching' mode and draw a box to define a template.")
                     else:
-                        target_pill = pills_in_roi[0]
-                        target_shape = target_pill['shape']
-                        target_color = target_pill['color']
-
-                        _, _, all_pills = detect_pills_pipeline(st.session_state.img, params)
-                        matches = [p for p in all_pills if p['shape'] == target_shape and p['color'] == target_color]
-
-                        match_image = st.session_state.img.copy()
-                        for pill in matches:
-                            x, y, w, h = cv2.boundingRect(pill['contour'])
-                            cv2.rectangle(match_image, (x, y), (x+w, y+h), (0, 255, 255), 4)
+                        template = image_to_process
+                        annotated_image = st.session_state.img.copy() # Search on the full image
+                        if detector_name == "Template Matching":
+                            matches = find_template_matches(st.session_state.img, template, params)
+                            pill_count = len(matches)
+                            for (x, y, w, h) in matches:
+                                cv2.rectangle(annotated_image, (x, y), (x + w, y + h), (255, 0, 0), 3)
+                        elif detector_name == "Feature-Based Matching":
+                            match_poly = find_feature_match(st.session_state.img, template)
+                            if match_poly is not None:
+                                cv2.polylines(annotated_image, [match_poly], True, (255, 0, 255), 3)
+                                pill_count = 1
                         
-                        display_match_resized = resize_for_display(match_image)
+                        st.metric(f"Matches Found in Full Image", pill_count)
+                        st.image(resize_for_display(annotated_image), channels="BGR", caption=f"Result from {detector_name}")
 
-                        st.metric(label="Total Matches Found", value=len(matches))
-                        st.image(display_match_resized, channels="BGR", use_container_width=True)
-                        
-                        st.markdown("##### Matching Results")
-                        match_data = {
-                            'Target Shape': [target_shape],
-                            'Target Color': [target_color],
-                            'Quantity Found': [len(matches)]
-                        }
-                        st.dataframe(pd.DataFrame(match_data), use_container_width=True)
-    
     elif not uploaded_file:
-         st.info("Awaiting image upload to display results.")
+         st.info("Awaiting image upload to begin.")
